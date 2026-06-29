@@ -204,6 +204,23 @@ def daily_series(days=30):
     return out
 
 
+def hourly_series_7d():
+    """Retorna [(hour, minutes), ...] para horas 0-23 dos últimos 7 dias."""
+    since = (datetime.date.today() - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT hour, SUM(duration_sec) s FROM sessions WHERE date >= ? GROUP BY hour",
+            (since,)
+        ).fetchall()
+    data = {r["hour"]: r["s"] for r in rows}
+    return [(h, round(data.get(h, 0) / 60)) for h in range(24)]
+
+
+def delete_session(sid):
+    with _conn() as c:
+        c.execute("DELETE FROM sessions WHERE id=?", (sid,))
+
+
 def streak():
     """Dias consecutivos (até hoje ou ontem) com pelo menos uma sessão."""
     with _conn() as c:

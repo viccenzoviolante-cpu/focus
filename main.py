@@ -185,6 +185,13 @@ class App(tk.Tk):
         if key=="dash":   self._refresh_dash()
         if key=="achiev": self._refresh_achiev()
         if key=="sounds": pass
+        # rebind mousewheel ao canvas da aba ativa
+        _cv={"sounds":getattr(self,"_sounds_cv",None),
+             "focus": getattr(self,"_focus_cv",None),
+             "dash":  getattr(self,"_dash_canvas",None),
+             "achiev":getattr(self,"_achiev_canvas",None)}.get(key)
+        if _cv:
+            _cv.bind_all("<MouseWheel>",lambda e,c=_cv:c.yview_scroll(int(-e.delta/120),"units"))
 
     # ════════════════════════════════════════════════════════ PLAYER TAB ═════
     def _build_player(self):
@@ -291,6 +298,7 @@ class App(tk.Tk):
 
         # scroll area
         canvas=tk.Canvas(f,bg=t.BG,highlightthickness=0,height=560)
+        self._sounds_cv=canvas
         sb=ttk.Scrollbar(f,orient="vertical",command=canvas.yview)
         inner=tk.Frame(canvas,bg=t.BG)
         inner.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")))
@@ -298,7 +306,6 @@ class App(tk.Tk):
         canvas.configure(yscrollcommand=sb.set)
         canvas.pack(side="left",fill="both",expand=True,padx=(8,0),pady=8)
         sb.pack(side="right",fill="y",pady=8)
-        canvas.bind_all("<MouseWheel>",lambda e:canvas.yview_scroll(int(-e.delta/120),"units"))
 
         self._sound_rows={}
         favs=set(db.get_json("fav_sounds",[]) or [])
@@ -383,6 +390,7 @@ class App(tk.Tk):
                  bg=t.BG,fg=t.MUTED,font=("Segoe UI",8)).pack(anchor="w",padx=14)
 
         canvas=tk.Canvas(f,bg=t.BG,highlightthickness=0,height=580)
+        self._focus_cv=canvas
         sb=ttk.Scrollbar(f,orient="vertical",command=canvas.yview)
         inner=tk.Frame(canvas,bg=t.BG)
         inner.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")))
@@ -509,6 +517,11 @@ class App(tk.Tk):
                  font=("Segoe UI",8)).pack(anchor="w",padx=6,pady=(8,2))
         self._draw_bar_chart(db.daily_series(30))
 
+        # gráfico por hora (últimos 7 dias)
+        tk.Label(self._dash_inner,text="Foco por hora — últimos 7 dias",bg=t.BG,fg=t.MUTED,
+                 font=("Segoe UI",8)).pack(anchor="w",padx=6,pady=(8,2))
+        self._draw_hourly_chart(db.hourly_series_7d())
+
         # calendário tipo GitHub
         tk.Label(self._dash_inner,text="Calendário de foco",bg=t.BG,fg=t.MUTED,
                  font=("Segoe UI",8)).pack(anchor="w",padx=6,pady=(8,2))
@@ -565,6 +578,24 @@ class App(tk.Tk):
                                fill=t.ACCENT if v>0 else t.SURF2,outline="")
         c.create_text(2,6,text=f"max {mx}min",fill=t.MUTED,
                       font=("Segoe UI",7),anchor="w")
+
+    def _draw_hourly_chart(self,series):
+        t=self.theme
+        c=tk.Canvas(self._dash_inner,bg=t.BG,height=100,highlightthickness=0)
+        c.pack(fill="x",padx=6)
+        c.update_idletasks()
+        W=self.WIDTH-30; H=100
+        mx=max((v for _,v in series),default=1) or 1
+        bw=W/24
+        for i,(h,v) in enumerate(series):
+            x=i*bw
+            bar_h=(v/mx)*(H-22)
+            col=t.ACCENT if v>0 else t.SURF2
+            c.create_rectangle(x+1,H-bar_h-18,x+bw-1,H-18,fill=col,outline="")
+            if h in (0,6,12,18,23):
+                c.create_text(x+bw/2,H-6,text=f"{h}h",fill=t.MUTED,
+                              font=("Segoe UI",6),anchor="center")
+        c.create_text(2,4,text=f"max {mx}min",fill=t.MUTED,font=("Segoe UI",7),anchor="w")
 
     def _draw_heatmap(self,series):
         t=self.theme
@@ -923,9 +954,9 @@ class App(tk.Tk):
     def _show_history(self):
         t=self.theme
         win=tk.Toplevel(self); win.title("Histórico"); win.configure(bg=t.BG)
-        win.geometry("520x440"); win.wm_attributes("-topmost",True)
+        win.geometry("520x500"); win.wm_attributes("-topmost",True)
         tk.Label(win,text="Histórico de Sessões",bg=t.BG,fg=t.TEXT,
-                 font=("Segoe UI",12,"bold")).pack(pady=(14,8),padx=16,anchor="w")
+                 font=("Segoe UI",12,"bold")).pack(pady=(14,4),padx=16,anchor="w")
         style=ttk.Style(win); style.theme_use("clam")
         style.configure("H.Treeview",background=t.SURF2,foreground=t.TEXT,
                         fieldbackground=t.SURF2,borderwidth=0,rowheight=24,
@@ -935,16 +966,29 @@ class App(tk.Tk):
         cols=("Data","Preset","Objetivo","Min","✓")
         tv=ttk.Treeview(win,columns=cols,show="headings",style="H.Treeview")
         widths=[130,70,110,60,30]
-        for c,w in zip(cols,widths):
-            tv.heading(c,text=c); tv.column(c,width=w)
+        for col,w in zip(cols,widths):
+            tv.heading(col,text=col); tv.column(col,width=w)
         for s in db.recent_sessions(300):
-            tv.insert("","end",values=(s["ended_at"][:16],s["preset"],
+            tv.insert("","end",iid=str(s["id"]),values=(s["ended_at"][:16],s["preset"],
                       s["objective"] or "—",round(s["duration_sec"]/60,1),
                       "✓" if s["completed"] else ""))
         sb=ttk.Scrollbar(win,orient="vertical",command=tv.yview)
         tv.configure(yscrollcommand=sb.set)
-        tv.pack(side="left",fill="both",expand=True,padx=(16,0),pady=(0,16))
-        sb.pack(side="right",fill="y",pady=(0,16),padx=(0,16))
+        tv.pack(side="left",fill="both",expand=True,padx=(16,0),pady=(0,0))
+        sb.pack(side="right",fill="y",pady=(0,0),padx=(0,16))
+        def _del():
+            sel=tv.selection()
+            if not sel: return
+            db.delete_session(int(sel[0]))
+            tv.delete(sel[0])
+            self._refresh_dash()
+        bf=tk.Frame(win,bg=t.BG); bf.pack(fill="x",padx=16,pady=10)
+        tk.Button(bf,text="🗑  Apagar selecionada",bg="#7a2a2a",fg="white",
+                  font=("Segoe UI",9,"bold"),bd=0,cursor="hand2",pady=6,
+                  activebackground="#6a1a1a",activeforeground="white",
+                  command=_del).pack(side="left",padx=(0,10))
+        tk.Label(bf,text="Clique numa linha para selecionar",bg=t.BG,fg=t.MUTED,
+                 font=("Segoe UI",8)).pack(side="left")
 
     # ── autostart Windows ───────────────────────────────────────────────────
     def _set_autostart(self,enable):
