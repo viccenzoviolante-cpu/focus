@@ -154,7 +154,7 @@ class App(tk.Tk):
         self._tab_btns={}
         for key,label in [("player","Player"),("sounds","Sons"),
                           ("focus","Focus"),("dash","Dashboard"),
-                          ("achiev","Conquistas")]:
+                          ("achiev","Conquistas"),("game","Reflexo")]:
             b=tk.Button(self.tabbar,text=label,bg=t.CARD,fg=t.MUTED,
                         font=("Segoe UI",8,"bold"),bd=0,relief="flat",
                         padx=4,pady=7,cursor="hand2",
@@ -165,7 +165,7 @@ class App(tk.Tk):
 
         # ── container das abas ──────────────────────────────────────────────
         self.body=tk.Frame(self,bg=t.BG); self.body.pack(fill="both",expand=True)
-        for key in ["player","sounds","focus","dash","achiev"]:
+        for key in ["player","sounds","focus","dash","achiev","game"]:
             f=tk.Frame(self.body,bg=t.BG)
             self._tabs[key]=f
         self._build_player()
@@ -173,6 +173,7 @@ class App(tk.Tk):
         self._build_focus()
         self._build_dash()
         self._build_achiev()
+        self._build_game()
         self._show_tab("player")
 
     def _show_tab(self,key):
@@ -670,6 +671,155 @@ class App(tk.Tk):
                        command=_set_theme,bg=t.SURF,fg=t.TEXT,selectcolor=t.SURF2,
                        activebackground=t.SURF,activeforeground=t.TEXT,
                        font=("Segoe UI",8),bd=0,anchor="w").pack(fill="x",pady=1)
+
+    # ════════════════════════════════════════════════════════ GAME TAB ═══════
+    def _build_game(self):
+        t=self.theme; f=self._tabs["game"]
+        tk.Label(f,text="Treino de Reflexo",bg=t.BG,fg=t.TEXT,
+                 font=("Segoe UI",13,"bold")).pack(anchor="w",padx=14,pady=(20,4))
+        tk.Label(f,text="Tela preta · ponto roxo aparece em posições aleatórias\n"
+                        "Clique quando ver o ponto · 5 minutos contínuos",
+                 bg=t.BG,fg=t.MUTED,font=("Segoe UI",8),justify="left"
+                 ).pack(anchor="w",padx=14,pady=(0,12))
+        self._game_result=tk.Label(f,text="",bg=t.BG,fg=t.ACCENT,
+                                   font=("Segoe UI",8),justify="center",wraplength=340)
+        self._game_result.pack(padx=14,pady=(0,6))
+        tk.Button(f,text="▶  Iniciar Treino (5 min)",bg=t.ACCENT,fg="white",
+                  font=("Segoe UI",12,"bold"),bd=0,height=2,cursor="hand2",
+                  activebackground="#2878cc",activeforeground="white",
+                  command=self._run_reflex_game).pack(fill="x",padx=14,pady=(0,16))
+        for title,desc in [
+            ("⚡ Reflexo","Mede o tempo entre o ponto aparecer e seu clique"),
+            ("🎯 Foco","Tela preta elimina distrações — atenção total ao estímulo"),
+            ("📊 Consistência","Desvio padrão mostra quão estável é seu foco ao longo dos 5min"),
+        ]:
+            card=tk.Frame(f,bg=t.SURF); card.pack(fill="x",padx=14,pady=3)
+            ci=tk.Frame(card,bg=t.SURF); ci.pack(fill="x",padx=12,pady=8)
+            tk.Label(ci,text=title,bg=t.SURF,fg=t.TEXT,
+                     font=("Segoe UI",9,"bold")).pack(anchor="w")
+            tk.Label(ci,text=desc,bg=t.SURF,fg=t.MUTED,font=("Segoe UI",8),
+                     wraplength=320,justify="left").pack(anchor="w")
+
+    def _run_reflex_game(self):
+        import random, statistics as _stats
+        DURATION=5*60; DOT_R=10; DOT_COL="#9b59b6"
+        MIN_IV=1.5; MAX_IV=4.5
+
+        win=tk.Toplevel(self)
+        win.overrideredirect(True)
+        win.attributes("-fullscreen",True)
+        win.configure(bg="black")
+        win.attributes("-topmost",True)
+        win.focus_force()
+        sw=win.winfo_screenwidth(); sh=win.winfo_screenheight()
+
+        cv=tk.Canvas(win,bg="black",highlightthickness=0,cursor="none")
+        cv.pack(fill="both",expand=True)
+
+        st={"start":None,"shown_at":None,"times":[],"count":0,"running":True,"aid":None}
+
+        hud_id=cv.create_text(sw//2,28,text="",fill="#505050",font=("Segoe UI",11))
+        cv.create_text(sw-80,28,text="ESC — sair",fill="#333333",font=("Segoe UI",9))
+
+        def _hud():
+            if st["start"] is None: return
+            rem=max(0,DURATION-(time.time()-st["start"]))
+            m=int(rem)//60; s=int(rem)%60; n=st["count"]
+            avg=""
+            if st["times"]:
+                avg=f"  ·  méd {int(sum(st['times'])/len(st['times'])*1000)}ms"
+            cv.itemconfig(hud_id,text=f"{m:02d}:{s:02d}  ·  {n} reflexos{avg}")
+
+        def _hide_dot():
+            cv.delete("dot"); st["shown_at"]=None
+
+        def _show_dot():
+            if not st["running"]: return
+            _hide_dot()
+            pad=80
+            x=random.randint(pad,sw-pad); y=random.randint(pad+60,sh-pad)
+            r=DOT_R
+            cv.create_oval(x-r-5,y-r-5,x+r+5,y+r+5,fill="#3a1a5a",outline="",tags="dot")
+            cv.create_oval(x-r,y-r,x+r,y+r,fill=DOT_COL,outline="",tags="dot")
+            st["shown_at"]=time.time()
+            st["aid"]=cv.after(2000,lambda:(_hide_dot(),_next()))
+
+        def _next():
+            if not st["running"]: return
+            if st["start"] and time.time()-st["start"]>=DURATION:
+                _finish(); return
+            delay=int(random.uniform(MIN_IV,MAX_IV)*1000)
+            cv.after(delay,_show_dot)
+
+        def _click(ev):
+            if not st["running"]: return
+            if st["shown_at"] is not None:
+                st["times"].append(time.time()-st["shown_at"]); st["count"]+=1
+            _hide_dot()
+            if st["aid"]:
+                try: cv.after_cancel(st["aid"])
+                except: pass
+                st["aid"]=None
+            _next(); _hud()
+
+        def _tick():
+            if not st["running"]: return
+            if st["start"] and time.time()-st["start"]>=DURATION:
+                _finish(); return
+            _hud(); cv.after(500,_tick)
+
+        def _grade(ms):
+            if ms<200:  return "Reflexo excelente! ⚡"
+            if ms<280:  return "Reflexo muito bom!"
+            if ms<380:  return "Reflexo bom"
+            if ms<500:  return "Continue treinando"
+            return "Foco e treino vão melhorar"
+
+        def _finish():
+            st["running"]=False
+            times=st["times"]; n=len(times)
+            if n==0:
+                summary="Nenhum reflexo registrado."; grade=""
+            else:
+                avg_ms=int(sum(times)/n*1000); best_ms=int(min(times)*1000)
+                cons=""
+                if n>=2:
+                    std_ms=int(_stats.stdev(times)*1000); cons=f"  ·  ±{std_ms}ms"
+                summary=f"{n} reflexos  ·  méd {avg_ms}ms  ·  melhor {best_ms}ms{cons}"
+                grade=_grade(avg_ms)
+            cv.delete("all")
+            cv.create_rectangle(0,0,sw,sh,fill="black")
+            cv.create_text(sw//2,sh//2-90,text="Treino concluído!",
+                          fill="#9b59b6",font=("Segoe UI",30,"bold"),anchor="center")
+            cv.create_text(sw//2,sh//2-28,text=summary,
+                          fill="#e8e8f0",font=("Segoe UI",14),anchor="center")
+            if grade:
+                cv.create_text(sw//2,sh//2+28,text=grade,
+                              fill="#4adf8a",font=("Segoe UI",16,"bold"),anchor="center")
+            cv.create_text(sw//2,sh//2+90,text="Clique para fechar",
+                          fill="#404040",font=("Segoe UI",11),anchor="center")
+            def _close(e=None):
+                win.destroy()
+                self._game_result.config(text=f"Último treino: {summary}")
+            cv.bind("<Button-1>",_close)
+            win.bind("<Escape>",_close)
+
+        def _esc(e): st["running"]=False; win.destroy()
+        cv.bind("<Button-1>",_click)
+        win.bind("<Escape>",_esc)
+
+        def _countdown(n):
+            cv.delete("all"); cv.create_rectangle(0,0,sw,sh,fill="black")
+            if n>0:
+                cv.create_text(sw//2,sh//2,text=str(n),
+                               fill="#9b59b6",font=("Segoe UI",120,"bold"),anchor="center")
+                cv.after(1000,lambda:_countdown(n-1))
+            else:
+                cv.create_text(sw//2,sh//2,text="GO!",
+                               fill="#4adf8a",font=("Segoe UI",100,"bold"),anchor="center")
+                st["start"]=time.time()
+                cv.after(700,lambda:(cv.delete("all"),_next(),_tick()))
+        _countdown(3)
 
     # ════════════════════════════════════════════════════════ ACHIEV TAB ═════
     def _build_achiev(self):
