@@ -116,6 +116,7 @@ class App(tk.Tk):
         if HAVE_TRAY:
             self._start_tray()
         self.protocol("WM_DELETE_WINDOW", self._hide)
+        self.after(400,self._open_checkin)
 
     # ════════════════════════════════════════════════════════════ BUILD ══════
     def _build(self):
@@ -554,31 +555,49 @@ class App(tk.Tk):
                  ).pack(anchor="w",padx=4,pady=(0,16))
 
     # ── check-in inicial ────────────────────────────────────────────────────
-    def _open_checkin(self):
+    def _open_checkin(self,entry_screen=True):
+        import random
         t=self.theme
         win=tk.Toplevel(self); win.title("Check-in inicial"); win.configure(bg=t.BG)
-        win.geometry("360x420+%d+%d"%(self.winfo_x()-370,self.winfo_y()+40))
+        w,h=380,520
+        sw,sh=self.winfo_screenwidth(),self.winfo_screenheight()
+        win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         win.wm_attributes("-topmost",True)
+        win.grab_set()
+        win.focus_force()
+
+        if entry_screen:
+            tk.Label(win,text=random.choice(pr.IDENTITY_PHRASES),bg=t.BG,fg=t.ACCENT,
+                     font=("Segoe UI",11,"bold"),wraplength=340,justify="left"
+                     ).pack(anchor="w",padx=16,pady=(18,10))
+            tk.Frame(win,bg=t.BORDER,height=1).pack(fill="x",padx=16,pady=(0,10))
+
         tk.Label(win,text="Check-in inicial",bg=t.BG,fg=t.TEXT,
-                 font=("Segoe UI",12,"bold")).pack(anchor="w",padx=16,pady=(14,2))
+                 font=("Segoe UI",12,"bold")).pack(anchor="w",padx=16,pady=(0,2))
         tk.Label(win,text="Responda rápido, sem pensar demais.",bg=t.BG,fg=t.MUTED,
                  font=("Segoe UI",8)).pack(anchor="w",padx=16,pady=(0,10))
         entries=[]
         for q in pr.CHECKIN_QUESTIONS:
             tk.Label(win,text=q,bg=t.BG,fg=t.TEXT,font=("Segoe UI",8,"bold"),
-                     wraplength=320,justify="left").pack(anchor="w",padx=16,pady=(6,2))
+                     wraplength=340,justify="left").pack(anchor="w",padx=16,pady=(6,2))
             e=tk.Entry(win,bg=t.SURF2,fg=t.TEXT,insertbackground=t.TEXT,bd=0)
             e.pack(fill="x",padx=16,ipady=4)
             entries.append((q,e))
         def _save():
             answers=[{"question":q,"answer":e.get()} for q,e in entries]
             db.save_checkin(answers)
-            win.destroy()
+            win.grab_release(); win.destroy()
             toast("Check-in","Registrado. Bom foco 🎯")
-        tk.Button(win,text="Salvar e continuar",bg=t.ACCENT,fg="white",
+        bf=tk.Frame(win,bg=t.BG); bf.pack(fill="x",padx=16,pady=16,side="bottom")
+        tk.Button(bf,text="Salvar e continuar",bg=t.ACCENT,fg="white",
                   font=("Segoe UI",10,"bold"),bd=0,cursor="hand2",pady=8,
                   activebackground="#2878cc",activeforeground="white",
-                  command=_save).pack(fill="x",padx=16,pady=16)
+                  command=_save).pack(fill="x")
+        if entry_screen:
+            tk.Button(bf,text="Pular por agora",bg=t.BG,fg=t.MUTED,font=("Segoe UI",8),
+                      bd=0,cursor="hand2",activebackground=t.BG,activeforeground=t.TEXT,
+                      command=lambda:(win.grab_release(),win.destroy())
+                      ).pack(pady=(6,0))
 
     # ── fluxo de impulso (SOS) ──────────────────────────────────────────────
     def _open_impulse_flow(self):
