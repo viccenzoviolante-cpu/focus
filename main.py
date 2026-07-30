@@ -191,7 +191,8 @@ class App(tk.Tk):
         if key=="impulso":self._refresh_impulso()
         if key=="sounds": pass
         # rebind mousewheel ao canvas da aba ativa
-        _cv={"sounds":getattr(self,"_sounds_cv",None),
+        _cv={"player":getattr(self,"_player_cv",None),
+             "sounds":getattr(self,"_sounds_cv",None),
              "focus": getattr(self,"_focus_cv",None),
              "impulso":getattr(self,"_impulso_cv",None),
              "dash":  getattr(self,"_dash_canvas",None),
@@ -201,7 +202,16 @@ class App(tk.Tk):
 
     # ════════════════════════════════════════════════════════ PLAYER TAB ═════
     def _build_player(self):
-        t=self.theme; f=self._tabs["player"]
+        t=self.theme; tab=self._tabs["player"]
+        canvas=tk.Canvas(tab,bg=t.BG,highlightthickness=0)
+        self._player_cv=canvas
+        sb=ttk.Scrollbar(tab,orient="vertical",command=canvas.yview)
+        f=tk.Frame(canvas,bg=t.BG)
+        f.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0,0),window=f,anchor="nw",width=self.WIDTH-24)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left",fill="both",expand=True,padx=(8,0))
+        sb.pack(side="right",fill="y")
 
         tk.Label(f,text="Use fones de ouvido para sentir o efeito completo",
                  bg=t.BG,fg=t.MUTED,font=("Segoe UI",8)).pack(pady=(10,0),padx=14,anchor="w")
@@ -233,6 +243,49 @@ class App(tk.Tk):
                                  lambda v:self.engine.set_binaural(vol=v))
 
         tk.Frame(f,bg=t.BORDER,height=1).pack(fill="x",padx=14,pady=(6,4))
+
+        # ── planejamento da sessão: tarefa única + checklist ────────────────
+        tk.Label(f,text="Planejamento da sessão",bg=t.BG,fg=t.MUTED,
+                 font=("Segoe UI",8)).pack(anchor="w",padx=14)
+
+        mt=tk.Frame(f,bg=t.BG); mt.pack(fill="x",padx=14,pady=(2,4))
+        self._task_var=tk.StringVar(value=db.get("main_task","") or "")
+        task_e=tk.Entry(mt,textvariable=self._task_var,bg=t.SURF2,fg=t.TEXT,
+                        insertbackground=t.TEXT,bd=0,font=("Segoe UI",9))
+        task_e.pack(fill="x",ipady=4)
+        task_e.bind("<FocusOut>",lambda e:db.set("main_task",self._task_var.get()))
+        task_e.bind("<Return>",lambda e:db.set("main_task",self._task_var.get()))
+        tk.Label(mt,text="🎯 a única tarefa importante desta sessão",bg=t.BG,fg=t.DIM,
+                 font=("Segoe UI",7)).pack(anchor="w",pady=(2,0))
+
+        cin=tk.Frame(f,bg=t.BG); cin.pack(fill="x",padx=14,pady=(0,2))
+        self._new_item_var=tk.StringVar()
+        ne=tk.Entry(cin,textvariable=self._new_item_var,bg=t.SURF2,fg=t.TEXT,
+                    insertbackground=t.TEXT,bd=0,font=("Segoe UI",9))
+        ne.pack(side="left",fill="x",expand=True,ipady=3)
+        ne.bind("<Return>",lambda e:self._add_checklist_item())
+        tk.Button(cin,text="+",bg=t.SURF2,fg=t.ACCENT,font=("Segoe UI",11,"bold"),bd=0,
+                  width=3,cursor="hand2",activebackground=t.DIM,activeforeground=t.ACCENT,
+                  command=self._add_checklist_item).pack(side="left",padx=(4,0))
+
+        ccf=tk.Frame(f,bg=t.BG); ccf.pack(fill="x",padx=14,pady=(2,2))
+        self._checklist_cv=tk.Canvas(ccf,bg=t.BG,highlightthickness=0,height=110)
+        csb=ttk.Scrollbar(ccf,orient="vertical",command=self._checklist_cv.yview)
+        self._checklist_inner=tk.Frame(self._checklist_cv,bg=t.BG)
+        self._checklist_inner.bind("<Configure>",
+            lambda e:self._checklist_cv.configure(scrollregion=self._checklist_cv.bbox("all")))
+        self._checklist_cv.create_window((0,0),window=self._checklist_inner,anchor="nw",
+                                         width=self.WIDTH-46)
+        self._checklist_cv.configure(yscrollcommand=csb.set)
+        self._checklist_cv.pack(side="left",fill="both",expand=True)
+        csb.pack(side="right",fill="y")
+
+        tk.Button(f,text="Limpar concluídas",bg=t.BG,fg=t.MUTED,font=("Segoe UI",7),
+                  bd=0,cursor="hand2",activebackground=t.BG,activeforeground=t.TEXT,
+                  command=self._clear_done_checklist).pack(anchor="e",padx=14,pady=(0,4))
+        self._refresh_checklist()
+
+        tk.Frame(f,bg=t.BORDER,height=1).pack(fill="x",padx=14,pady=(2,4))
 
         # timer
         tk.Label(f,text="Timer / Pomodoro",bg=t.BG,fg=t.MUTED,
@@ -281,6 +334,44 @@ class App(tk.Tk):
         # favoritos salvos
         self._fav_frame=tk.Frame(f,bg=t.BG); self._fav_frame.pack(fill="x",padx=14,pady=(2,0))
         self._refresh_favorites()
+
+    # ── checklist da sessão ──────────────────────────────────────────────────
+    def _add_checklist_item(self):
+        txt=self._new_item_var.get().strip()
+        if txt:
+            db.add_checklist_item(txt)
+            self._new_item_var.set("")
+            self._refresh_checklist()
+
+    def _clear_done_checklist(self):
+        db.clear_done_checklist_items()
+        self._refresh_checklist()
+
+    def _refresh_checklist(self):
+        t=self.theme
+        for w in self._checklist_inner.winfo_children(): w.destroy()
+        items=db.list_checklist_items()
+        if not items:
+            tk.Label(self._checklist_inner,text="Nenhum item ainda — adicione acima.",
+                     bg=t.BG,fg=t.MUTED,font=("Segoe UI",8)).pack(anchor="w",pady=4)
+            return
+        for it in items:
+            row=tk.Frame(self._checklist_inner,bg=t.BG); row.pack(fill="x",pady=1)
+            var=tk.BooleanVar(value=bool(it["done"]))
+            tk.Checkbutton(row,variable=var,bg=t.BG,selectcolor=t.SURF2,
+                           activebackground=t.BG,bd=0,
+                           command=lambda iid=it["id"]:(db.toggle_checklist_item(iid),
+                                                        self._refresh_checklist())
+                           ).pack(side="left")
+            font=("Segoe UI",9,"overstrike") if it["done"] else ("Segoe UI",9)
+            tk.Label(row,text=it["text"],bg=t.BG,fg=t.DIM if it["done"] else t.TEXT,
+                     font=font,anchor="w",justify="left",wraplength=self.WIDTH-90
+                     ).pack(side="left",fill="x",expand=True)
+            tk.Button(row,text="✕",bg=t.BG,fg=t.MUTED,font=("Segoe UI",8),bd=0,
+                      cursor="hand2",activebackground=t.BG,activeforeground="#e05555",
+                      command=lambda iid=it["id"]:(db.delete_checklist_item(iid),
+                                                   self._refresh_checklist())
+                      ).pack(side="right")
 
     def _slider(self,parent,label,mn,mx,default,res,cmd):
         t=self.theme

@@ -82,6 +82,13 @@ def init():
             date       TEXT,
             answers    TEXT       -- JSON [{question, answer}, ...]
         );
+
+        CREATE TABLE IF NOT EXISTS checklist_items (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            text       TEXT,
+            done       INTEGER DEFAULT 0,
+            created_at TEXT
+        );
         """)
     _seed_defaults()
 
@@ -98,6 +105,7 @@ def _seed_defaults():
         "rest_reminders": "1",
         "last_session_config": "{}",
         "fav_sounds": "[]",
+        "main_task": "",
     }
     with _conn() as c:
         for k, v in defaults.items():
@@ -415,6 +423,30 @@ def recent_checkins(limit=20):
     for r in rows:
         r["answers"] = json.loads(r["answers"] or "[]")
     return rows
+
+
+# ─────────────────────────────────────────────────────────────── checklist ───
+def add_checklist_item(text):
+    with _conn() as c:
+        c.execute("INSERT INTO checklist_items(text,done,created_at) VALUES(?,0,?)",
+                  (text, datetime.datetime.now().isoformat()))
+
+def list_checklist_items():
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM checklist_items ORDER BY id ASC").fetchall()]
+
+def toggle_checklist_item(iid):
+    with _conn() as c:
+        c.execute("UPDATE checklist_items SET done = 1-done WHERE id=?", (iid,))
+
+def delete_checklist_item(iid):
+    with _conn() as c:
+        c.execute("DELETE FROM checklist_items WHERE id=?", (iid,))
+
+def clear_done_checklist_items():
+    with _conn() as c:
+        c.execute("DELETE FROM checklist_items WHERE done=1")
 
 
 init()
