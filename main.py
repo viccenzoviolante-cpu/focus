@@ -153,7 +153,8 @@ class App(tk.Tk):
         self._tabs={}
         self._tab_btns={}
         for key,label in [("player","Player"),("sounds","Sons"),
-                          ("focus","Focus"),("dash","Dashboard"),
+                          ("focus","Focus"),("impulso","Impulso"),
+                          ("dash","Dashboard"),
                           ("achiev","Conquistas"),("game","Reflexo")]:
             b=tk.Button(self.tabbar,text=label,bg=t.CARD,fg=t.MUTED,
                         font=("Segoe UI",8,"bold"),bd=0,relief="flat",
@@ -165,12 +166,13 @@ class App(tk.Tk):
 
         # ── container das abas ──────────────────────────────────────────────
         self.body=tk.Frame(self,bg=t.BG); self.body.pack(fill="both",expand=True)
-        for key in ["player","sounds","focus","dash","achiev","game"]:
+        for key in ["player","sounds","focus","impulso","dash","achiev","game"]:
             f=tk.Frame(self.body,bg=t.BG)
             self._tabs[key]=f
         self._build_player()
         self._build_sounds()
         self._build_focus()
+        self._build_impulso()
         self._build_dash()
         self._build_achiev()
         self._build_game()
@@ -185,10 +187,12 @@ class App(tk.Tk):
         self._tab_btns[key].config(fg=t.ACCENT,bg=t.SURF)
         if key=="dash":   self._refresh_dash()
         if key=="achiev": self._refresh_achiev()
+        if key=="impulso":self._refresh_impulso()
         if key=="sounds": pass
         # rebind mousewheel ao canvas da aba ativa
         _cv={"sounds":getattr(self,"_sounds_cv",None),
              "focus": getattr(self,"_focus_cv",None),
+             "impulso":getattr(self,"_impulso_cv",None),
              "dash":  getattr(self,"_dash_canvas",None),
              "achiev":getattr(self,"_achiev_canvas",None)}.get(key)
         if _cv:
@@ -259,6 +263,11 @@ class App(tk.Tk):
                              activebackground="#2878cc",activeforeground="white",
                              command=self._toggle)
         self._pbtn.pack(fill="x",padx=14,pady=(4,3))
+
+        tk.Button(f,text="🆘  Estou com vontade de desistir",bg=t.SURF2,fg="#e0a020",
+                  font=("Segoe UI",9,"bold"),bd=0,cursor="hand2",pady=6,
+                  activebackground=t.DIM,activeforeground="#e0a020",
+                  command=self._open_impulse_flow).pack(fill="x",padx=14,pady=(0,3))
 
         bf=tk.Frame(f,bg=t.BG); bf.pack(fill="x",padx=14,pady=(0,4))
         for txt,cmd in [("⭐ Salvar favorita",self._save_favorite),
@@ -445,6 +454,227 @@ class App(tk.Tk):
                       command=lambda pid=p["id"]:(db.delete_protocol(pid),
                                                   self._refresh_protocols())
                       ).pack(side="right",padx=6)
+
+    # ════════════════════════════════════════════════════════ IMPULSO TAB ════
+    def _build_impulso(self):
+        t=self.theme; f=self._tabs["impulso"]
+        canvas=tk.Canvas(f,bg=t.BG,highlightthickness=0,height=640)
+        self._impulso_cv=canvas
+        sb=ttk.Scrollbar(f,orient="vertical",command=canvas.yview)
+        inner=tk.Frame(canvas,bg=t.BG)
+        self._impulso_inner=inner
+        inner.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0,0),window=inner,anchor="nw",width=self.WIDTH-24)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left",fill="both",expand=True,padx=(8,0),pady=8)
+        sb.pack(side="right",fill="y",pady=8)
+
+    def _refresh_impulso(self):
+        import random
+        t=self.theme
+        for w in self._impulso_inner.winfo_children(): w.destroy()
+
+        # ── ritual de entrada ────────────────────────────────────────────────
+        tk.Label(self._impulso_inner,text="Ritual de entrada",bg=t.BG,fg=t.TEXT,
+                 font=("Segoe UI",11,"bold")).pack(anchor="w",padx=4,pady=(4,2))
+        phrase_card=tk.Frame(self._impulso_inner,bg=t.SURF); phrase_card.pack(fill="x",padx=4,pady=3)
+        pi=tk.Frame(phrase_card,bg=t.SURF); pi.pack(fill="x",padx=12,pady=10)
+        phrase_lbl=tk.Label(pi,text=random.choice(pr.IDENTITY_PHRASES),bg=t.SURF,
+                            fg=t.ACCENT,font=("Segoe UI",10,"bold"),
+                            justify="left",wraplength=320)
+        phrase_lbl.pack(anchor="w")
+        tk.Button(pi,text="↻ nova frase",bg=t.SURF,fg=t.MUTED,font=("Segoe UI",8),
+                  bd=0,cursor="hand2",activebackground=t.SURF,activeforeground=t.TEXT,
+                  command=lambda:phrase_lbl.config(text=random.choice(pr.IDENTITY_PHRASES))
+                  ).pack(anchor="e",pady=(6,0))
+
+        tk.Button(self._impulso_inner,text="📝  Fazer check-in inicial",bg=t.SURF2,
+                  fg=t.TEXT,font=("Segoe UI",9,"bold"),bd=0,cursor="hand2",pady=8,
+                  activebackground=t.ACCENT,activeforeground="white",
+                  command=self._open_checkin).pack(fill="x",padx=4,pady=(4,10))
+
+        # ── SOS impulso ──────────────────────────────────────────────────────
+        tk.Button(self._impulso_inner,text="🆘  Estou com vontade de desistir",
+                  bg="#7a2a2a",fg="white",font=("Segoe UI",11,"bold"),bd=0,
+                  height=2,cursor="hand2",activebackground="#6a1a1a",
+                  activeforeground="white",command=self._open_impulse_flow
+                  ).pack(fill="x",padx=4,pady=(0,10))
+
+        # ── diário: stats ────────────────────────────────────────────────────
+        stats=db.impulse_stats()
+        tk.Label(self._impulso_inner,text="Diário de impulsos",bg=t.BG,fg=t.TEXT,
+                 font=("Segoe UI",11,"bold")).pack(anchor="w",padx=4,pady=(4,2))
+        sf=tk.Frame(self._impulso_inner,bg=t.SURF); sf.pack(fill="x",padx=4,pady=3)
+        si=tk.Frame(sf,bg=t.SURF); si.pack(fill="x",padx=12,pady=10)
+        tk.Label(si,text=f"{stats['total']} impulsos observados",bg=t.SURF,fg=t.TEXT,
+                 font=("Segoe UI",9,"bold")).pack(anchor="w")
+        tk.Label(si,text=f"{stats['rate']}% não viraram ação automática",bg=t.SURF,
+                 fg=t.GREEN,font=("Segoe UI",9)).pack(anchor="w",pady=(2,0))
+        if stats["by_group"]:
+            top=", ".join(f"{g} ({n})" for g,n in stats["by_group"][:3])
+            tk.Label(si,text=f"Mais frequentes: {top}",bg=t.SURF,fg=t.MUTED,
+                     font=("Segoe UI",8),wraplength=320,justify="left"
+                     ).pack(anchor="w",pady=(4,0))
+
+        # ── diário: lista ────────────────────────────────────────────────────
+        entries=db.recent_impulses(30)
+        if not entries:
+            tk.Label(self._impulso_inner,text="Nenhum impulso registrado ainda.",
+                     bg=t.BG,fg=t.MUTED,font=("Segoe UI",8)
+                     ).pack(anchor="w",padx=4,pady=(4,10))
+        else:
+            for e in entries:
+                row=tk.Frame(self._impulso_inner,bg=t.SURF); row.pack(fill="x",pady=2,padx=4)
+                ri=tk.Frame(row,bg=t.SURF); ri.pack(fill="x",padx=10,pady=6)
+                top_row=tk.Frame(ri,bg=t.SURF); top_row.pack(fill="x")
+                tk.Label(top_row,text=f"{e['item']}  ·  {e['group_label']}",bg=t.SURF,
+                         fg=t.TEXT,font=("Segoe UI",8,"bold")).pack(side="left")
+                tk.Label(top_row,text=e["time"],bg=t.SURF,fg=t.MUTED,
+                         font=("Segoe UI",8)).pack(side="right")
+                col={"Passou sozinho":t.GREEN,"Redirecionei a atenção":t.ACCENT,
+                     "Cedi ao impulso":"#e0a020"}.get(e["resolution"],t.MUTED)
+                bot=tk.Frame(ri,bg=t.SURF); bot.pack(fill="x",pady=(2,0))
+                tk.Label(bot,text=f"intensidade {e['intensity']}/5",bg=t.SURF,
+                         fg=t.MUTED,font=("Segoe UI",8)).pack(side="left")
+                tk.Label(bot,text=e["resolution"],bg=t.SURF,fg=col,
+                         font=("Segoe UI",8,"bold")).pack(side="right")
+
+        # ── filosofia ────────────────────────────────────────────────────────
+        tk.Frame(self._impulso_inner,bg=t.BORDER,height=1).pack(fill="x",padx=4,pady=(10,8))
+        tk.Label(self._impulso_inner,text="Por que esse app existe",bg=t.BG,fg=t.TEXT,
+                 font=("Segoe UI",9,"bold")).pack(anchor="w",padx=4,pady=(0,2))
+        tk.Label(self._impulso_inner,text=pr.PHILOSOPHY,bg=t.BG,fg=t.MUTED,
+                 font=("Segoe UI",8),wraplength=340,justify="left"
+                 ).pack(anchor="w",padx=4,pady=(0,6))
+        tk.Label(self._impulso_inner,text=pr.CORE_INSIGHT,bg=t.BG,fg=t.MUTED,
+                 font=("Segoe UI",8),wraplength=340,justify="left"
+                 ).pack(anchor="w",padx=4,pady=(0,6))
+        tk.Label(self._impulso_inner,text="  →  ".join(pr.IMPULSE_CYCLE),bg=t.BG,
+                 fg=t.ACCENT,font=("Segoe UI",8,"bold"),wraplength=340,justify="left"
+                 ).pack(anchor="w",padx=4,pady=(0,16))
+
+    # ── check-in inicial ────────────────────────────────────────────────────
+    def _open_checkin(self):
+        t=self.theme
+        win=tk.Toplevel(self); win.title("Check-in inicial"); win.configure(bg=t.BG)
+        win.geometry("360x420+%d+%d"%(self.winfo_x()-370,self.winfo_y()+40))
+        win.wm_attributes("-topmost",True)
+        tk.Label(win,text="Check-in inicial",bg=t.BG,fg=t.TEXT,
+                 font=("Segoe UI",12,"bold")).pack(anchor="w",padx=16,pady=(14,2))
+        tk.Label(win,text="Responda rápido, sem pensar demais.",bg=t.BG,fg=t.MUTED,
+                 font=("Segoe UI",8)).pack(anchor="w",padx=16,pady=(0,10))
+        entries=[]
+        for q in pr.CHECKIN_QUESTIONS:
+            tk.Label(win,text=q,bg=t.BG,fg=t.TEXT,font=("Segoe UI",8,"bold"),
+                     wraplength=320,justify="left").pack(anchor="w",padx=16,pady=(6,2))
+            e=tk.Entry(win,bg=t.SURF2,fg=t.TEXT,insertbackground=t.TEXT,bd=0)
+            e.pack(fill="x",padx=16,ipady=4)
+            entries.append((q,e))
+        def _save():
+            answers=[{"question":q,"answer":e.get()} for q,e in entries]
+            db.save_checkin(answers)
+            win.destroy()
+            toast("Check-in","Registrado. Bom foco 🎯")
+        tk.Button(win,text="Salvar e continuar",bg=t.ACCENT,fg="white",
+                  font=("Segoe UI",10,"bold"),bd=0,cursor="hand2",pady=8,
+                  activebackground="#2878cc",activeforeground="white",
+                  command=_save).pack(fill="x",padx=16,pady=16)
+
+    # ── fluxo de impulso (SOS) ──────────────────────────────────────────────
+    def _open_impulse_flow(self):
+        import random
+        t=self.theme
+        win=tk.Toplevel(self); win.title("Impulso"); win.configure(bg=t.BG)
+        win.geometry("360x420+%d+%d"%(self.winfo_x()-370,self.winfo_y()+40))
+        win.wm_attributes("-topmost",True)
+        body=tk.Frame(win,bg=t.BG); body.pack(fill="both",expand=True)
+        state={"group":None,"item":None}
+
+        def _clear():
+            for w in body.winfo_children(): w.destroy()
+
+        def _step_reflect():
+            _clear()
+            q=random.choice(pr.REFLECTION_QUESTIONS)
+            tk.Label(body,text="Antes de continuar…",bg=t.BG,fg=t.MUTED,
+                     font=("Segoe UI",8)).pack(anchor="w",padx=16,pady=(16,4))
+            tk.Label(body,text=q,bg=t.BG,fg=t.TEXT,font=("Segoe UI",13,"bold"),
+                     wraplength=320,justify="left").pack(anchor="w",padx=16,pady=(0,20))
+            tk.Button(body,text="Continuar",bg=t.ACCENT,fg="white",
+                      font=("Segoe UI",10,"bold"),bd=0,cursor="hand2",pady=8,
+                      activebackground="#2878cc",activeforeground="white",
+                      command=_step_classify).pack(fill="x",padx=16)
+
+        def _step_classify():
+            _clear()
+            tk.Label(body,text="O que meu cérebro está tentando conseguir agora?",
+                     bg=t.BG,fg=t.TEXT,font=("Segoe UI",10,"bold"),wraplength=320,
+                     justify="left").pack(anchor="w",padx=16,pady=(16,10))
+            for g in pr.IMPULSE_GROUPS:
+                tk.Button(body,text=f"{g['icon']}  {g['label']}",bg=t.SURF2,fg=t.TEXT,
+                          font=("Segoe UI",9,"bold"),bd=0,cursor="hand2",pady=8,
+                          activebackground=t.DIM,activeforeground=t.TEXT,
+                          command=lambda g=g:_step_item(g)).pack(fill="x",padx=16,pady=3)
+
+        def _step_item(group):
+            _clear(); state["group"]=group
+            tk.Label(body,text=f"{group['icon']}  {group['label']}",bg=t.BG,fg=t.TEXT,
+                     font=("Segoe UI",10,"bold")).pack(anchor="w",padx=16,pady=(16,10))
+            for item in group["items"]:
+                tk.Button(body,text=item,bg=t.SURF2,fg=t.TEXT,font=("Segoe UI",9),
+                          bd=0,cursor="hand2",pady=7,activebackground=t.DIM,
+                          activeforeground=t.TEXT,
+                          command=lambda i=item:_step_reality(i)).pack(fill="x",padx=16,pady=2)
+            tk.Button(body,text="← voltar",bg=t.BG,fg=t.MUTED,font=("Segoe UI",8),
+                      bd=0,cursor="hand2",activebackground=t.BG,activeforeground=t.TEXT,
+                      command=_step_classify).pack(anchor="w",padx=16,pady=(10,0))
+
+        def _step_reality(item):
+            _clear(); state["item"]=item
+            group=state["group"]
+            tk.Label(body,text=f"Impulso: {item}",bg=t.BG,fg=t.MUTED,
+                     font=("Segoe UI",8)).pack(anchor="w",padx=16,pady=(16,4))
+            tk.Label(body,text="O que realmente resolve isso?",bg=t.BG,fg=t.TEXT,
+                     font=("Segoe UI",10,"bold")).pack(anchor="w",padx=16,pady=(0,6))
+            tk.Label(body,text=group["reality"],bg=t.SURF,fg=t.TEXT,font=("Segoe UI",9),
+                     wraplength=320,justify="left",padx=12,pady=10
+                     ).pack(fill="x",padx=16,pady=(0,16))
+            tk.Button(body,text="Continuar",bg=t.ACCENT,fg="white",
+                      font=("Segoe UI",10,"bold"),bd=0,cursor="hand2",pady=8,
+                      activebackground="#2878cc",activeforeground="white",
+                      command=_step_intensity).pack(fill="x",padx=16)
+
+        def _step_intensity():
+            _clear()
+            tk.Label(body,text="Intensidade do impulso agora",bg=t.BG,fg=t.TEXT,
+                     font=("Segoe UI",10,"bold")).pack(anchor="w",padx=16,pady=(16,10))
+            row=tk.Frame(body,bg=t.BG); row.pack(padx=16)
+            for n in range(1,6):
+                tk.Button(row,text=str(n),bg=t.SURF2,fg=t.TEXT,font=("Segoe UI",11,"bold"),
+                          bd=0,cursor="hand2",width=4,pady=8,activebackground=t.ACCENT,
+                          activeforeground="white",
+                          command=lambda n=n:_step_resolution(n)).pack(side="left",padx=3)
+
+        def _step_resolution(intensity):
+            _clear()
+            tk.Label(body,text="Como terminou (ou está terminando)?",bg=t.BG,fg=t.TEXT,
+                     font=("Segoe UI",10,"bold"),wraplength=320,justify="left"
+                     ).pack(anchor="w",padx=16,pady=(16,10))
+            for res in pr.IMPULSE_RESOLUTIONS:
+                tk.Button(body,text=res,bg=t.SURF2,fg=t.TEXT,font=("Segoe UI",9,"bold"),
+                          bd=0,cursor="hand2",pady=8,activebackground=t.DIM,
+                          activeforeground=t.TEXT,
+                          command=lambda r=res:_finish(intensity,r)).pack(fill="x",padx=16,pady=3)
+
+        def _finish(intensity,resolution):
+            g=state["group"]
+            db.log_impulse(g["id"],g["label"],state["item"],intensity,None,resolution)
+            win.destroy()
+            toast("Registrado","Impulso anotado no diário 📓")
+            if self._tabs["impulso"].winfo_ismapped():
+                self._refresh_impulso()
+
+        _step_reflect()
 
     # ════════════════════════════════════════════════════════ DASH TAB ═══════
     def _build_dash(self):

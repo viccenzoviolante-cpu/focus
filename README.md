@@ -13,6 +13,7 @@ Todos os sons são **sintetizados por DSP** — não precisa baixar nenhum arqui
 - **Dashboard completo** — horas por dia/semana/mês/ano, gráfico, calendário tipo GitHub, streak, meta diária, XP e níveis
 - **Conquistas** desbloqueáveis
 - **Protocolos Biohacker** personalizados
+- **Sistema de Impulso** — ritual de entrada, check-in inicial, botão "estou com vontade de desistir" com reflexão guiada, classificação do impulso (necessidade física / emoção / hábito) e diário de impulsos com estatísticas
 - **Bandeja do sistema** com o tempo no ícone
 - Abrir com o Windows · modo invisível · tema AMOLED · lembretes de descanso
 - Tudo salvo localmente em SQLite (sobrevive a reinicializações)

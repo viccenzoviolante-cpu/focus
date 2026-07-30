@@ -62,6 +62,26 @@ def init():
             sound  TEXT PRIMARY KEY,
             secs   REAL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS impulses (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at   TEXT,
+            date         TEXT,
+            time         TEXT,
+            group_id     TEXT,     -- fisica / emocao / habito
+            group_label  TEXT,
+            item         TEXT,     -- Fome, Ansiedade, Jogos, ...
+            intensity    INTEGER,  -- 1-5
+            duration_min REAL,     -- quanto tempo durou (estimado pelo usuário)
+            resolution   TEXT      -- ver IMPULSE_RESOLUTIONS
+        );
+
+        CREATE TABLE IF NOT EXISTS checkins (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            date       TEXT,
+            answers    TEXT       -- JSON [{question, answer}, ...]
+        );
         """)
     _seed_defaults()
 
@@ -345,6 +365,56 @@ def export_json(path):
             "xp": get_xp(),
             "achievements": list(unlocked_achievements()),
         }, f, ensure_ascii=False, indent=2)
+
+
+# ─────────────────────────────────────────────────────────────── impulses ────
+def log_impulse(group_id, group_label, item, intensity, duration_min, resolution):
+    now = datetime.datetime.now()
+    with _conn() as c:
+        c.execute("""INSERT INTO impulses
+            (created_at,date,time,group_id,group_label,item,intensity,duration_min,resolution)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (now.isoformat(), now.strftime("%Y-%m-%d"), now.strftime("%H:%M"),
+             group_id, group_label, item, intensity, duration_min, resolution))
+
+def recent_impulses(limit=100):
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM impulses ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+
+def impulse_stats():
+    with _conn() as c:
+        total = c.execute("SELECT COUNT(*) c FROM impulses").fetchone()["c"]
+        resisted = c.execute(
+            "SELECT COUNT(*) c FROM impulses WHERE resolution != 'Cedi ao impulso'"
+        ).fetchone()["c"]
+        by_group = c.execute(
+            "SELECT group_label, COUNT(*) n FROM impulses GROUP BY group_label ORDER BY n DESC"
+        ).fetchall()
+    rate = round(resisted / total * 100) if total else 0
+    return {"total": total, "resisted": resisted, "rate": rate,
+            "by_group": [(r["group_label"], r["n"]) for r in by_group]}
+
+def delete_impulse(iid):
+    with _conn() as c:
+        c.execute("DELETE FROM impulses WHERE id=?", (iid,))
+
+
+# ─────────────────────────────────────────────────────────────── check-ins ───
+def save_checkin(answers):
+    now = datetime.datetime.now()
+    with _conn() as c:
+        c.execute("INSERT INTO checkins(created_at,date,answers) VALUES(?,?,?)",
+                  (now.isoformat(), now.strftime("%Y-%m-%d"),
+                   json.dumps(answers, ensure_ascii=False)))
+
+def recent_checkins(limit=20):
+    with _conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM checkins ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+    for r in rows:
+        r["answers"] = json.loads(r["answers"] or "[]")
+    return rows
 
 
 init()

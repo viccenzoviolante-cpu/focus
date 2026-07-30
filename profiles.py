@@ -164,3 +164,84 @@ REST_TIPS = [
     "👀 Regra 20-20-20: olhe 20 s para algo a 6 m de distância.",
     "🌬️ Respire fundo 3 vezes, devagar.",
 ]
+
+
+# ── Sistema de Impulso — ritual de entrada, check-in, diário ──────────────────
+# Frases de identidade (ritual de entrada — quebrar o piloto automático)
+IDENTITY_PHRASES = [
+    "Eu não preciso sentir vontade para agir.",
+    "Meu trabalho de hoje constrói minha liberdade de amanhã.",
+    "Os primeiros 10 minutos decidem meu dia.",
+    "Eu cumpro o combinado comigo mesmo.",
+]
+
+# Check-in inicial — respondidas rapidamente antes de começar
+CHECKIN_QUESTIONS = [
+    "O que estou sentindo agora?",
+    "Estou cansado, ansioso, entediado ou com medo?",
+    "O que meu cérebro quer fazer agora?",
+    "O que estou evitando?",
+    "Qual é a única tarefa importante deste momento?",
+]
+
+# Perguntas de reflexão — uma aleatória ao clicar em "vontade de desistir"
+REFLECTION_QUESTIONS = [
+    "O que aconteceu imediatamente antes dessa vontade?",
+    "O que estou tentando evitar?",
+    "Essa vontade é necessidade ou impulso?",
+    "Se eu fizer isso agora, como vou me sentir daqui a 30 minutos?",
+    "Se eu trabalhar só mais 10 minutos, o que consigo concluir?",
+    "Essa decisão me aproxima ou me afasta da pessoa que quero ser?",
+    "O que eu realmente preciso agora?",
+]
+
+# Natureza do impulso — grupo, itens e o que realmente resolve (reality check)
+IMPULSE_GROUPS = [
+    {
+        "id": "fisica", "label": "Necessidade física", "icon": "🧍",
+        "items": ["Fome", "Sede", "Sono", "Descanso"],
+        "reality": "Isso é uma necessidade real do corpo. Atenda com o mínimo "
+                   "necessário (água, um lanche rápido, alongar) e volte — não "
+                   "precisa virar uma pausa longa.",
+    },
+    {
+        "id": "emocao", "label": "Emoção", "icon": "🌊",
+        "items": ["Ansiedade", "Tédio", "Medo", "Frustração", "Solidão"],
+        "reality": "Nenhuma distração resolve uma emoção — ela só adia o "
+                   "desconforto. A emoção passa sozinha se você não alimentar "
+                   "a fuga dela.",
+    },
+    {
+        "id": "habito", "label": "Hábito", "icon": "🔁",
+        "items": ["Pornografia", "Jogos", "YouTube", "Redes sociais"],
+        "reality": "Isso não resolve o seu problema. É só o piloto automático "
+                   "adiando o desconforto — e o desconforto continua te "
+                   "esperando depois.",
+    },
+]
+
+def impulse_group_by_id(gid):
+    for g in IMPULSE_GROUPS:
+        if g["id"] == gid:
+            return g
+    return None
+
+# Como o impulso terminou (registrado no diário)
+IMPULSE_RESOLUTIONS = ["Passou sozinho", "Redirecionei a atenção", "Cedi ao impulso"]
+
+# Ciclo central: toda vez que surgir um impulso
+IMPULSE_CYCLE = ["Perceber", "Nomear", "Classificar", "Refletir", "Agir conscientemente"]
+
+# Filosofia do app — texto mostrado na aba Impulso
+PHILOSOPHY = (
+    "O app não serve para motivar. Ele serve para interromper o piloto "
+    "automático, aumentar a consciência, criar um espaço entre impulso e ação "
+    "e ajudar você a escolher conscientemente."
+)
+
+CORE_INSIGHT = (
+    "O problema não é falta de disciplina. O problema é agir automaticamente.\n\n"
+    "Nem todo impulso cresce para sempre — alguns simplesmente desaparecem "
+    "quando não são alimentados. Vale para fome, vontade de pornografia, "
+    "vontade de jogar, vontade de procrastinar."
+)
