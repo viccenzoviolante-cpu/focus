@@ -239,6 +239,112 @@ PHILOSOPHY = (
     "e ajudar você a escolher conscientemente."
 )
 
+# ── Lugares — cenários prontos, cada um é uma combinação de camadas de som ────
+# "sounds" usa a chave especial "__voice__" pra marcar a camada de vozes que
+# pode trocar de idioma (resolvida em audio_engine.voice_ambient_for_lang);
+# as demais chaves são ids diretos de AMBIENTS. Onde o app ainda não tem um
+# sintetizador dedicado (praça, shopping, metrô, navio...), o "desc" avisa
+# que é uma aproximação com o que já existe.
+PLACES = {
+    "🌆 Lugares públicos": [
+        {"id":"rua_movimentada","icon":"🚦","label":"Rua movimentada","default_lang":"en",
+         "desc":"Tráfego intenso, buzinas, gente passando perto.",
+         "sounds":{"city":55,"__voice__":20}},
+        {"id":"rua_residencial","icon":"🏘️","label":"Rua residencial",
+         "desc":"Tráfego distante, vento, um ou outro pássaro.",
+         "sounds":{"wind":30,"city":12,"forest":12}},
+        {"id":"centro_cidade","icon":"🏙️","label":"Centro da cidade","default_lang":"en",
+         "desc":"Movimento constante, vozes por perto, ônibus e motos passando.",
+         "sounds":{"city":60,"__voice__":25}},
+        {"id":"praca","icon":"⛲","label":"Praça","default_lang":"en",
+         "desc":"Aproximação: parque urbano com pássaros, vento e vozes distantes.",
+         "sounds":{"forest":20,"city":18,"wind":15,"__voice__":12}},
+        {"id":"parque","icon":"🌳","label":"Parque",
+         "desc":"Floresta urbana — pássaros e vento, sem tráfego perto.",
+         "sounds":{"forest":45,"wind":18}},
+        {"id":"shopping","icon":"🛍️","label":"Shopping","default_lang":"en",
+         "desc":"Aproximação: murmúrio de gente + zumbido de ar-condicionado.",
+         "sounds":{"__voice__":40,"ac":22}},
+        {"id":"aeroporto","icon":"✈️","label":"Aeroporto","default_lang":"en",
+         "desc":"Aproximação: motor de avião ao fundo + movimento de gente.",
+         "sounds":{"plane":28,"city":14,"__voice__":20}},
+        {"id":"estacao_trem","icon":"🚉","label":"Estação de trem","default_lang":"en",
+         "desc":"Trem se aproximando, cidade ao fundo, gente esperando.",
+         "sounds":{"train":32,"city":15,"__voice__":15}},
+        {"id":"metro","icon":"🚇","label":"Metrô","default_lang":"en",
+         "desc":"Aproximação: usamos o trem como base (sem sintetizador de metrô ainda).",
+         "sounds":{"train":55,"city":10}},
+    ],
+    "☕ Cafés": [
+        {"id":"cafe_pequeno","icon":"☕","label":"Café pequeno","default_lang":"en",
+         "desc":"Ambiente intimista, poucas vozes, sem pressa.",
+         "sounds":{"cafe":35,"__voice__":18}},
+        {"id":"cafe_starbucks","icon":"☕","label":"Café estilo grande rede","default_lang":"en",
+         "desc":"Movimentado, ar-condicionado, máquina de espresso o tempo todo.",
+         "sounds":{"cafe":45,"__voice__":30,"ac":10}},
+        {"id":"cafe_italiano","icon":"🇮🇹","label":"Cafeteria italiana","default_lang":"it",
+         "desc":"Murmúrio em italiano, espresso, tinido de xícaras.",
+         "sounds":{"cafe":40,"__voice__":30}},
+        {"id":"cafe_frances","icon":"🇫🇷","label":"Café francês","default_lang":"fr",
+         "desc":"Murmúrio em francês, rua próxima, café passando.",
+         "sounds":{"cafe":40,"__voice__":30}},
+        {"id":"cafe_japones","icon":"🇯🇵","label":"Café japonês","default_lang":"ja",
+         "desc":"Murmúrio em japonês, ambiente calmo e discreto.",
+         "sounds":{"cafe":35,"__voice__":25}},
+        {"id":"cafe_chuva","icon":"🌧️","label":"Café com chuva na janela","default_lang":"en",
+         "desc":"O aconchego do café por dentro, chuva leve por fora.",
+         "sounds":{"cafe":38,"__voice__":22,"rain":28}},
+    ],
+    "📚 Trabalho": [
+        {"id":"biblioteca","icon":"📖","label":"Biblioteca",
+         "desc":"Silêncio quase total, página virando, tosse rara.",
+         "sounds":{"library":55}},
+        {"id":"coworking","icon":"💻","label":"Coworking","default_lang":"en",
+         "desc":"Aproximação: biblioteca + murmúrio leve + ar-condicionado.",
+         "sounds":{"library":30,"__voice__":15,"ac":10}},
+        {"id":"escritorio_silencioso","icon":"🏢","label":"Escritório silencioso",
+         "desc":"Zumbido de ar-condicionado, quase ninguém falando.",
+         "sounds":{"library":38,"ac":15}},
+        {"id":"escritorio_movimentado","icon":"🏢","label":"Escritório movimentado","default_lang":"en",
+         "desc":"Aproximação: mais murmúrio de vozes por cima do escritório silencioso.",
+         "sounds":{"library":25,"__voice__":30,"ac":10}},
+        {"id":"universidade","icon":"🎓","label":"Universidade","default_lang":"en",
+         "desc":"Aproximação: biblioteca + vozes de corredor + cidade distante.",
+         "sounds":{"library":30,"__voice__":25,"city":10}},
+        {"id":"sala_estudos","icon":"📝","label":"Sala de estudos",
+         "desc":"Como a biblioteca, mais abafado e fechado.",
+         "sounds":{"library":45}},
+    ],
+    "🚗 Transportes": [
+        {"id":"carro","icon":"🚗","label":"Dentro de um carro",
+         "desc":"Aproximação: zumbido de motor (ar-condicionado) + vento.",
+         "sounds":{"ac":45,"wind":15}},
+        {"id":"carro_chuva","icon":"🌧️","label":"Chuva no carro",
+         "desc":"Motor abafado, chuva batendo no teto e vidro.",
+         "sounds":{"ac":35,"rain":35,"wind":10}},
+        {"id":"onibus","icon":"🚌","label":"Ônibus",
+         "desc":"Aproximação: tráfego urbano + motor mais grave.",
+         "sounds":{"city":40,"ac":18}},
+        {"id":"trem_noturno","icon":"🚂","label":"Trem noturno",
+         "desc":"Clickety-clack do trilho, vento, apito distante.",
+         "sounds":{"train":55}},
+        {"id":"aviao","icon":"✈️","label":"Avião em voo",
+         "desc":"Drone do motor turbofan, ar de cabine.",
+         "sounds":{"plane":55}},
+        {"id":"navio","icon":"🚢","label":"Navio",
+         "desc":"Aproximação: mar + zumbido de motor + vento.",
+         "sounds":{"sea":40,"ac":18,"wind":15}},
+    ],
+}
+
+def place_by_id(pid):
+    for cat in PLACES.values():
+        for p in cat:
+            if p["id"] == pid:
+                return p
+    return None
+
+
 CORE_INSIGHT = (
     "O problema não é falta de disciplina. O problema é agir automaticamente.\n\n"
     "Nem todo impulso cresce para sempre — alguns simplesmente desaparecem "

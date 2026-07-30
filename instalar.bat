@@ -20,11 +20,11 @@ python --version
 echo  [OK] Python encontrado!
 echo.
 
-echo  Instalando dependencias (numpy, sounddevice, pystray, Pillow)...
+echo  Instalando dependencias (numpy, sounddevice, pystray, Pillow, soundfile)...
 echo  Pode levar 1-2 minutos na primeira vez. Aguarde...
 echo.
 python -m pip install --upgrade pip --quiet
-python -m pip install numpy sounddevice pystray Pillow
+python -m pip install numpy sounddevice pystray Pillow soundfile
 
 if errorlevel 1 (
     echo.
@@ -42,6 +42,10 @@ copy /Y "%~dp0main.py"         "%DEST%\main.py"         >nul
 copy /Y "%~dp0database.py"     "%DEST%\database.py"     >nul
 copy /Y "%~dp0audio_engine.py" "%DEST%\audio_engine.py" >nul
 copy /Y "%~dp0profiles.py"     "%DEST%\profiles.py"     >nul
+if exist "%~dp0sounds" (
+    if not exist "%DEST%\sounds" mkdir "%DEST%\sounds"
+    copy /Y "%~dp0sounds\*.ogg" "%DEST%\sounds\" >nul
+)
 echo  [OK] Arquivos copiados para %DEST%
 
 set LNK=%USERPROFILE%\Desktop\Ondas Binaurais.lnk

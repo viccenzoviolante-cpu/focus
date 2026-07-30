@@ -3,18 +3,22 @@ audio_engine.py — Síntese de áudio em tempo real.
 
 - Tons binaurais (frequência independente por canal L/R)
 - Ruídos coloridos gerados proceduralmente: white, pink, brown, green
-- Sons ambientes sintetizados (chuva, mar, fogo, vento, etc.) — sem arquivos externos
+- Sons ambientes sintetizados (chuva, mar, fogo, vento, etc.)
 - EventScheduler: cada ambiente "vivo" (floresta, chuva, vento, café, biblioteca,
   trem, cidade) soma uma textura contínua de base com pequenos eventos
   independentes (pássaro, gota, porta, moto...) que nascem, tocam e morrem
   sozinhos — com posição estéreo, distância, pitch e duração próprios.
+- Híbrido: alguns eventos e camadas de fundo usam amostras reais CC0 (pasta
+  sounds/, baixadas via tools/fetch_sounds.py) misturadas com a síntese
+  procedural — ex.: pássaro pode ser sintetizado OU uma gravação real; o
+  murmúrio de vozes de um "lugar" pode ser real, num idioma específico.
+  Sem sounds/ ou sem a lib soundfile, essas camadas simplesmente não tocam
+  e tudo o mais continua funcionando (fallback silencioso, ver HAVE_SF).
 - Fade in/out, crossfade, volume por camada
 - Áudio espacial (panning lento L<->R) opcional por camada
 - Tudo somado num único stream estéreo de 48 kHz
-
-Não depende de arquivos .wav/.mp3 — todos os sons são gerados por DSP,
-então o app é totalmente portátil (um arquivo só, sem assets).
 """
+import os
 import numpy as np
 import threading
 import datetime as _dt
@@ -25,8 +29,15 @@ try:
 except Exception:
     HAVE_SD = False
 
+try:
+    import soundfile as sf
+    HAVE_SF = True
+except Exception:
+    HAVE_SF = False
+
 SR = 48000
 BLOCK = 1024
+SOUNDS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
 
 
 # ─────────────────────────────────────────────────────────── geradores ───────
@@ -201,6 +212,49 @@ def _mult_nighttime(h):
     return 0.02
 
 
+# ── amostras reais (híbrido: síntese + gravação) ───────────────────────────────
+_sample_cache = {}
+
+def _load_sample(name):
+    """Carrega sounds/<name>.ogg -> mono float32 @ SR, cacheado. None se
+    indisponível (lib ausente, arquivo não baixado ainda) — quem chama deve
+    tratar isso como "esse som não toca", nunca como erro fatal."""
+    if not HAVE_SF:
+        return None
+    if name in _sample_cache:
+        return _sample_cache[name]
+    path = os.path.join(SOUNDS_DIR, f"{name}.ogg")
+    if not os.path.exists(path):
+        _sample_cache[name] = None
+        return None
+    try:
+        data, sr = sf.read(path, dtype="float32")
+        if data.ndim > 1:
+            data = data.mean(axis=1).astype(np.float32)
+        if sr != SR:
+            old_idx = np.arange(len(data))
+            new_len = max(1, int(len(data) * SR / sr))
+            new_idx = np.linspace(0, len(data)-1, new_len)
+            data = np.interp(new_idx, old_idx, data).astype(np.float32)
+        peak = float(np.abs(data).max()) or 1.0
+        data = (data / peak * 0.9).astype(np.float32)
+        # fade curto nas pontas: evita clique tanto num único disparo quanto
+        # na emenda quando a amostra toca em loop contínuo
+        fade = min(len(data)//4, int(0.02*SR))
+        if fade > 1:
+            ramp = np.linspace(0, 1, fade, dtype=np.float32)
+            data[:fade] *= ramp
+            data[-fade:] *= ramp[::-1]
+    except Exception:
+        data = None
+    _sample_cache[name] = data
+    return data
+
+
+def sample_available(name):
+    return _load_sample(name) is not None
+
+
 # ── primitivas reutilizáveis (imitam a física, não o resultado final) ─────────
 class NoiseBurst(SoundEvent):
     """Estouro de ruído filtrado com decaimento exponencial — base física para
@@ -337,6 +391,43 @@ class Tone(SoundEvent):
 
 
 # ── pássaros: várias espécies, cada uma com timbre e cadência próprios ────────
+class SampleEvent(SoundEvent):
+    """Toca uma amostra real (sounds/<name>.ogg) uma vez, com fade curto nas
+    pontas (evita clique) e pitch ajustável via reamostragem. Se a amostra
+    não estiver disponível, nasce já morta — o EventScheduler simplesmente
+    não soma nada nesse bloco, sem quebrar nada."""
+    def __init__(self, sample="", vol=0.6, **kw):
+        super().__init__(**kw)
+        base = _load_sample(sample)
+        if base is None or len(base) < 8:
+            self.alive = False
+            self._data = None; self.pos = 0; self.vol = vol
+            return
+        if abs(self.pitch - 1.0) > 1e-3:
+            new_len = max(8, int(len(base)/self.pitch))
+            base = np.interp(np.linspace(0, len(base)-1, new_len),
+                              np.arange(len(base)), base).astype(np.float32)
+        fade = min(len(base)//8, int(0.008*SR))
+        if fade > 1:
+            base = base.copy()
+            ramp = np.linspace(0, 1, fade, dtype=np.float32)
+            base[:fade] *= ramp
+            base[-fade:] *= ramp[::-1]
+        self._data = base; self.pos = 0; self.vol = vol
+
+    def _synth(self, n):
+        if self._data is None:
+            self.alive = False; return None
+        take = min(len(self._data)-self.pos, n)
+        if take <= 0:
+            self.alive = False; return None
+        out = np.zeros(n, dtype=np.float32)
+        out[:take] = self._data[self.pos:self.pos+take]*self.vol
+        self.pos += take
+        if self.pos >= len(self._data): self.alive = False
+        return out
+
+
 class BirdEvent(SoundEvent):
     """Canto = oscilador com FM leve (a garganta do pássaro não é uma senoide
     fixa) + vários bicos curtos com gaps irregulares. Nunca soa igual duas vezes."""
@@ -407,6 +498,16 @@ FOREST_EVENTS = [
      "kwargs": lambda: dict(freq=np.random.uniform(180, 220), dur=np.random.uniform(2, 4),
                              vibrato_hz=18, vibrato_depth=15, amp=0.1,
                              pan=_rand_pan(), distance=_rand_dist(0.1, 0.5))},
+    # híbrido: canto de pássaro real (CC0), alternando com o BirdEvent sintético acima
+    {"cls": SampleEvent, "chance": 0.004, "cooldown": (3, 12), "max": 1,
+     "hour_mult": _mult_daytime,
+     "kwargs": lambda: dict(sample=np.random.choice(["bird_1", "bird_2", "bird_3"]),
+                             vol=np.random.uniform(0.4, 0.7), pitch=_rand_pitch(0.06),
+                             pan=_rand_pan(), distance=_rand_dist(0.05, 0.8))},
+    {"cls": SampleEvent, "chance": 0.0004, "cooldown": (80, 200), "max": 1,
+     "hour_mult": _mult_nighttime,
+     "kwargs": lambda: dict(sample="owl_hoot", vol=0.5, pitch=_rand_pitch(0.05),
+                             pan=_rand_pan(), distance=_rand_dist(0.4, 0.9))},
 ]
 
 RAIN_EVENTS = [
@@ -425,6 +526,9 @@ THUNDER_EVENTS = [
     {"cls": Swell, "chance": 0.0015, "cooldown": (60, 150), "max": 1,
      "kwargs": lambda: dict(dur=np.random.uniform(2.5, 4.5), cutoff0=0.01, cutoff1=0.08,
                              amp=np.random.uniform(0.5, 0.8), pan=_rand_pan(), distance=_rand_dist(0.3, 0.8))},
+    {"cls": SampleEvent, "chance": 0.001, "cooldown": (60, 150), "max": 1,
+     "kwargs": lambda: dict(sample="thunder", vol=np.random.uniform(0.5, 0.8),
+                             pan=_rand_pan(), distance=_rand_dist(0.3, 0.7))},
 ]
 
 WIND_EVENTS = [
@@ -452,6 +556,12 @@ CAFE_EVENTS = [
      "kwargs": lambda: dict(n_pulses=np.random.randint(4, 8), pulse_dur=0.015, decay=0.01,
                              gap=(0.15, 0.3), filt="high", cutoff=0.5, amp=0.15,
                              pan=_rand_pan(), distance=_rand_dist(0.1, 0.4))},
+    {"cls": SampleEvent, "chance": 0.0008, "cooldown": (40, 100), "max": 1,
+     "kwargs": lambda: dict(sample="door_creak", vol=np.random.uniform(0.4, 0.6),
+                             pan=_rand_pan(), distance=_rand_dist(0.3, 0.7))},
+    {"cls": SampleEvent, "chance": 0.003, "cooldown": (10, 30), "max": 1,
+     "kwargs": lambda: dict(sample="cup_clink", vol=np.random.uniform(0.3, 0.5),
+                             pitch=_rand_pitch(0.15), pan=_rand_pan(), distance=_rand_dist(0.1, 0.4))},
 ]
 
 LIBRARY_EVENTS = [
@@ -493,6 +603,9 @@ CITY_EVENTS = [
      "kwargs": lambda: dict(n_pulses=np.random.randint(2, 4), pulse_dur=0.08, decay=0.035,
                              gap=(0.2, 0.35), filt="band", cutoff=0.25, amp=0.2,
                              pan=_rand_pan(), distance=_rand_dist(0.3, 0.7))},
+    {"cls": SampleEvent, "chance": 0.0009, "cooldown": (30, 90), "max": 1,
+     "kwargs": lambda: dict(sample="dog_bark", vol=np.random.uniform(0.35, 0.6),
+                             pitch=_rand_pitch(0.1), pan=_rand_pan(), distance=_rand_dist(0.3, 0.8))},
 ]
 
 
@@ -650,16 +763,38 @@ def _amb_plane(n, st):
     return np.clip((engine + drone + cabin) * mod, -1, 1).astype(np.float32)
 
 
-def _amb_cafe(n, st):
-    """Café: murmúrio de vozes com AM na taxa de sílabas, steam, tinido de
-    xícaras + eventos longos (espresso, cadeira, porta, colher mexendo)."""
+def _voices_synth(n, st):
+    """Murmúrio de vozes sintético, sem idioma específico — usado dentro do
+    café e como camada avulsa "Vozes (sintético)" em Lugares sem amostra
+    real disponível pro idioma escolhido."""
     t = np.arange(n) + st.t; st.t += n
     speech = _pink(n, st.noise)
     # Três "vozes" sobrepostas com modulação na faixa de sílabas (3-6 Hz)
     v1 = np.abs(np.sin(2*np.pi * 4.3 * (t/SR) + 0.3)) * 0.55 + 0.18
     v2 = np.abs(np.sin(2*np.pi * 3.6 * (t/SR) + 2.1)) * 0.45 + 0.15
     v3 = np.abs(np.sin(2*np.pi * 5.7 * (t/SR) + 4.5)) * 0.35 + 0.12
-    voices = speech * (v1 + v2 + v3).astype(np.float32) * 0.20
+    return (speech * (v1 + v2 + v3).astype(np.float32) * 0.20).astype(np.float32)
+
+
+def _make_voice_loop(sample_name):
+    """Cria uma função ambiente(n, st) que toca sounds/<sample_name>.ogg em
+    loop contínuo (a amostra já tem fade nas pontas, então a emenda não
+    estala) — usado pelas vozes reais por idioma em Lugares."""
+    def _fn(n, st):
+        data = _load_sample(sample_name)
+        if data is None:
+            return np.zeros(n, dtype=np.float32)
+        L = len(data)
+        idx = (st.t + np.arange(n)) % L
+        st.t += n
+        return (data[idx.astype(np.int64)] * 0.7).astype(np.float32)
+    return _fn
+
+
+def _amb_cafe(n, st):
+    """Café: murmúrio de vozes com AM na taxa de sílabas, steam, tinido de
+    xícaras + eventos longos (espresso, cadeira, porta, colher mexendo)."""
+    voices = _voices_synth(n, st)
     warmth = _brown(n, st.noise) * 0.07
     if np.random.random() < 0.003:
         st.env = np.random.uniform(0.5, 0.9)
@@ -735,7 +870,29 @@ AMBIENTS = {
     "pink":      ("Pink Noise",       lambda n, st: _pink(n, st.noise)),
     "brown":     ("Brown Noise",      lambda n, st: _brown(n, st.noise)),
     "green":     ("Green Noise",      lambda n, st: _green(n, st.noise)),
+    # vozes por idioma (híbrido: amostra real CC0 em loop; sem amostra, cai
+    # no murmúrio sintético) — usadas pelos "Lugares" com opção de idioma
+    "voices_synth": ("Vozes (sintético)", _voices_synth),
+    "voices_en":    ("Vozes — inglês",    _make_voice_loop("voices_en")),
+    "voices_fr":    ("Vozes — francês",   _make_voice_loop("voices_fr")),
+    "voices_de":    ("Vozes — alemão",    _make_voice_loop("voices_de")),
+    "voices_ja":    ("Vozes — japonês",   _make_voice_loop("voices_ja")),
+    "voices_ko":    ("Vozes — coreano",   _make_voice_loop("voices_ko")),
+    "voices_es":    ("Vozes — espanhol",  _make_voice_loop("voices_es")),
+    "voices_it":    ("Vozes — italiano",  _make_voice_loop("voices_it")),
 }
+
+LANGUAGES = [
+    ("en", "🇬🇧 Inglês"), ("fr", "🇫🇷 Francês"), ("de", "🇩🇪 Alemão"),
+    ("ja", "🇯🇵 Japonês"), ("ko", "🇰🇷 Coreano"), ("es", "🇪🇸 Espanhol"),
+    ("it", "🇮🇹 Italiano"),
+]
+
+def voice_ambient_for_lang(lang):
+    """Retorna o id de ambiente pra esse idioma — a amostra real se ela foi
+    baixada (ver tools/fetch_sounds.py), senão o murmúrio sintético genérico."""
+    sid = f"voices_{lang}"
+    return sid if sample_available(sid) else "voices_synth"
 
 
 # ─────────────────────────────────────────────────────────────── camada ──────

@@ -15,7 +15,8 @@ def _ensure(pkg, imp=None):
     except ImportError:
         import subprocess
         subprocess.check_call([sys.executable,"-m","pip","install",pkg,"--quiet"])
-for _p,_i in [("numpy",None),("sounddevice",None),("pystray",None),("Pillow","PIL")]:
+for _p,_i in [("numpy",None),("sounddevice",None),("pystray",None),("Pillow","PIL"),
+              ("soundfile",None)]:
     try: _ensure(_p,_i)
     except Exception: pass
 
@@ -154,7 +155,8 @@ class App(tk.Tk):
         self._tabs={}
         self._tab_btns={}
         for key,label in [("player","Player"),("sounds","Sons"),
-                          ("focus","Focus"),("impulso","Impulso"),
+                          ("focus","Focus"),("lugares","Lugares"),
+                          ("impulso","Impulso"),
                           ("dash","Dashboard"),
                           ("achiev","Conquistas"),("game","Reflexo")]:
             b=tk.Button(self.tabbar,text=label,bg=t.CARD,fg=t.MUTED,
@@ -167,12 +169,13 @@ class App(tk.Tk):
 
         # ── container das abas ──────────────────────────────────────────────
         self.body=tk.Frame(self,bg=t.BG); self.body.pack(fill="both",expand=True)
-        for key in ["player","sounds","focus","impulso","dash","achiev","game"]:
+        for key in ["player","sounds","focus","lugares","impulso","dash","achiev","game"]:
             f=tk.Frame(self.body,bg=t.BG)
             self._tabs[key]=f
         self._build_player()
         self._build_sounds()
         self._build_focus()
+        self._build_lugares()
         self._build_impulso()
         self._build_dash()
         self._build_achiev()
@@ -194,6 +197,7 @@ class App(tk.Tk):
         _cv={"player":getattr(self,"_player_cv",None),
              "sounds":getattr(self,"_sounds_cv",None),
              "focus": getattr(self,"_focus_cv",None),
+             "lugares":getattr(self,"_lugares_cv",None),
              "impulso":getattr(self,"_impulso_cv",None),
              "dash":  getattr(self,"_dash_canvas",None),
              "achiev":getattr(self,"_achiev_canvas",None)}.get(key)
@@ -546,6 +550,78 @@ class App(tk.Tk):
                       command=lambda pid=p["id"]:(db.delete_protocol(pid),
                                                   self._refresh_protocols())
                       ).pack(side="right",padx=6)
+
+    # ════════════════════════════════════════════════════════ LUGARES TAB ════
+    def _build_lugares(self):
+        t=self.theme; f=self._tabs["lugares"]
+        tk.Label(f,text="Lugares",bg=t.BG,fg=t.TEXT,
+                 font=("Segoe UI",11,"bold")).pack(anchor="w",padx=14,pady=(10,2))
+        tk.Label(f,text="Cenários prontos — várias camadas de som combinadas de uma vez.",
+                 bg=t.BG,fg=t.MUTED,font=("Segoe UI",8),wraplength=340,justify="left"
+                 ).pack(anchor="w",padx=14)
+
+        canvas=tk.Canvas(f,bg=t.BG,highlightthickness=0,height=580)
+        self._lugares_cv=canvas
+        sb=ttk.Scrollbar(f,orient="vertical",command=canvas.yview)
+        inner=tk.Frame(canvas,bg=t.BG)
+        inner.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0,0),window=inner,anchor="nw",width=self.WIDTH-24)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left",fill="both",expand=True,padx=(8,0),pady=8)
+        sb.pack(side="right",fill="y",pady=8)
+
+        self._place_lang_var={}
+        for cat_name, places in pr.PLACES.items():
+            tk.Label(inner,text=cat_name,bg=t.BG,fg=t.TEXT,
+                     font=("Segoe UI",10,"bold")).pack(anchor="w",padx=4,pady=(12,4))
+            for place in places:
+                self._make_place_card(inner, place)
+
+    def _make_place_card(self,parent,place):
+        t=self.theme
+        card=tk.Frame(parent,bg=t.SURF); card.pack(fill="x",pady=4,padx=4)
+        ci=tk.Frame(card,bg=t.SURF); ci.pack(fill="x",padx=12,pady=10)
+        tk.Label(ci,text=f"{place['icon']}  {place['label']}",bg=t.SURF,
+                 fg=t.TEXT,font=("Segoe UI",10,"bold")).pack(anchor="w")
+        tk.Label(ci,text=place["desc"],bg=t.SURF,fg=t.MUTED,font=("Segoe UI",8),
+                 justify="left",wraplength=310).pack(anchor="w",pady=(4,6))
+
+        has_voice="__voice__" in place["sounds"]
+        if has_voice:
+            var=tk.StringVar(value=place.get("default_lang","en"))
+            self._place_lang_var[place["id"]]=var
+            lf=tk.Frame(ci,bg=t.SURF); lf.pack(fill="x",pady=(0,6))
+            tk.Label(lf,text="Idioma das vozes:",bg=t.SURF,fg=t.MUTED,
+                     font=("Segoe UI",8)).pack(side="left")
+            labels={code:lbl for code,lbl in ae.LANGUAGES}
+            om=tk.OptionMenu(lf,var,*[c for c,_ in ae.LANGUAGES])
+            om.config(bg=t.SURF2,fg=t.TEXT,font=("Segoe UI",8),bd=0,
+                      activebackground=t.DIM,highlightthickness=0)
+            om["menu"].config(bg=t.SURF2,fg=t.TEXT)
+            om.pack(side="left",padx=(6,0))
+
+        tk.Button(ci,text="▶  Iniciar este lugar",bg=t.SURF2,fg=t.TEXT,
+                  font=("Segoe UI",9,"bold"),bd=0,cursor="hand2",pady=6,
+                  activebackground=t.ACCENT,activeforeground="white",
+                  command=lambda p=place:self._start_place(p)).pack(fill="x")
+
+    def _start_place(self,place):
+        self.engine.clear_layers()
+        for sid,r in self._sound_rows.items():
+            r["on"].set(False)
+        lang=self._place_lang_var[place["id"]].get() if place["id"] in self._place_lang_var else None
+        for key,vol in place["sounds"].items():
+            sid = ae.voice_ambient_for_lang(lang) if key=="__voice__" else key
+            self.engine.add_layer(sid)
+            self.engine.set_layer_vol(sid,vol)
+            if sid in self._sound_rows:
+                self._sound_rows[sid]["on"].set(True)
+                self._sound_rows[sid]["vol"].set(vol)
+        self._save_sounds_state()
+        if not self.engine.playing:
+            self.engine.start()
+        self._show_tab("sounds")
+        toast("Lugares",f"{place['icon']} {place['label']} — ajuste as camadas na aba Sons")
 
     # ════════════════════════════════════════════════════════ IMPULSO TAB ════
     def _build_impulso(self):
