@@ -4,6 +4,10 @@ audio_engine.py — Síntese de áudio em tempo real.
 - Tons binaurais (frequência independente por canal L/R)
 - Ruídos coloridos gerados proceduralmente: white, pink, brown, green
 - Sons ambientes sintetizados (chuva, mar, fogo, vento, etc.) — sem arquivos externos
+- EventScheduler: cada ambiente "vivo" (floresta, chuva, vento, café, biblioteca,
+  trem, cidade) soma uma textura contínua de base com pequenos eventos
+  independentes (pássaro, gota, porta, moto...) que nascem, tocam e morrem
+  sozinhos — com posição estéreo, distância, pitch e duração próprios.
 - Fade in/out, crossfade, volume por camada
 - Áudio espacial (panning lento L<->R) opcional por camada
 - Tudo somado num único stream estéreo de 48 kHz
@@ -13,6 +17,7 @@ então o app é totalmente portátil (um arquivo só, sem assets).
 """
 import numpy as np
 import threading
+import datetime as _dt
 
 try:
     import sounddevice as sd
@@ -85,9 +90,416 @@ def _green(n, st):
     return (out*4.0).astype(np.float32)
 
 
+# ═══════════════════════════════════ eventos sonoros (vida dos ambientes) ═════
+# Filosofia: em vez de cada ambiente gerar tudo dentro de uma função monolítica,
+# uma textura contínua de base (ar, ruído de fundo) toca o tempo inteiro, e
+# pequenos SoundEvents independentes nascem, tocam e morrem por conta própria —
+# cada um com posição estéreo, distância, pitch e duração. O EventScheduler
+# decide, a cada bloco de áudio, se algum evento novo nasce (chance/cooldown/
+# concorrência máxima). Isso é o que faz um ambiente soar vivo em vez de um
+# loop repetitivo.
+
+class SoundEvent:
+    """Evento sonoro efêmero. Subclasses implementam _synth(n) -> mono float32."""
+    def __init__(self, pan=0.0, distance=0.3, pitch=1.0, gain=1.0):
+        self.pan      = max(-1.0, min(1.0, pan))
+        self.distance = max(0.0, min(1.0, distance))   # 0 perto .. 1 longe
+        self.pitch    = pitch
+        self.gain     = gain
+        self.alive    = True
+        self._lp      = 0.0   # estado do filtro de distância
+
+    def _synth(self, n):
+        """Retorna array mono [-1..1] já com timbre + envelope. Deve setar
+        self.alive=False quando o evento tiver acabado."""
+        raise NotImplementedError
+
+    def render(self, n):
+        mono = self._synth(n)
+        if mono is None:
+            return None
+        # distância: mais longe = mais baixo e mais abafado (ar absorve agudos)
+        vol = self.gain * (1.0 - 0.75*self.distance)
+        mono = mono * vol
+        if self.distance > 0.15:
+            cutoff = max(0.03, 0.5*(1.0 - self.distance))
+            lp = self._lp
+            for i in range(len(mono)):
+                lp += cutoff*(mono[i]-lp); mono[i] = lp
+            self._lp = lp
+        # longe = mais centralizado no estéreo (a diferença de fase se perde)
+        pan = self.pan * (1.0 - 0.6*self.distance)
+        left  = mono * (1.0 - max(0.0, pan))
+        right = mono * (1.0 + min(0.0, pan))
+        return left.astype(np.float32), right.astype(np.float32)
+
+
+class EventScheduler:
+    """Tabela de eventos possíveis para um ambiente. A cada bloco decide se
+    algum novo evento nasce, respeitando chance por bloco, cooldown (em
+    segundos, aleatório dentro de uma faixa) e nº máximo simultâneo.
+    Specs: {"cls":Classe, "chance":float, "cooldown":(min_s,max_s),
+            "max":int, "kwargs":callable()->dict, "hour_mult":callable(h)->float}
+    """
+    def __init__(self, specs):
+        self.specs = specs
+        self._cooldown = [0]*len(specs)
+        self.events = []
+
+    def _count(self, cls):
+        return sum(1 for e in self.events if isinstance(e, cls))
+
+    def _tick(self, n):
+        hour = _dt.datetime.now().hour
+        for i, spec in enumerate(self.specs):
+            if self._cooldown[i] > 0:
+                self._cooldown[i] -= n
+                continue
+            if self._count(spec["cls"]) >= spec.get("max", 2):
+                continue
+            chance = spec["chance"]
+            mult = spec.get("hour_mult")
+            if mult:
+                chance *= mult(hour)
+            if np.random.random() < chance:
+                kw = spec.get("kwargs")
+                self.events.append(spec["cls"](**(kw() if kw else {})))
+                lo, hi = spec["cooldown"]
+                self._cooldown[i] = int(np.random.uniform(lo, hi) * SR)
+
+    def render(self, n):
+        self._tick(n)
+        l = np.zeros(n, dtype=np.float32)
+        r = np.zeros(n, dtype=np.float32)
+        alive = []
+        for e in self.events:
+            out = e.render(n)
+            if out is not None:
+                el, er = out
+                l += el; r += er
+            if e.alive:
+                alive.append(e)
+        self.events = alive
+        return l, r
+
+
+def _rand_pan():                      return float(np.random.uniform(-1, 1))
+def _rand_dist(near=0.1, far=0.9):    return float(np.random.uniform(near, far))
+def _rand_pitch(spread=0.08):         return float(1.0 + np.random.uniform(-spread, spread))
+
+def _mult_daytime(h):
+    """Multiplicador de atividade diurna (pássaros): pico de manhã, quase nada à noite."""
+    if 5 <= h <= 10:  return 1.6
+    if 11 <= h <= 17: return 1.0
+    if 18 <= h <= 20: return 0.5
+    return 0.05
+
+def _mult_nighttime(h):
+    """Multiplicador de atividade noturna (grilos, coruja): quase nulo de dia."""
+    if h >= 21 or h <= 5: return 1.4
+    if 6 <= h <= 8 or 19 <= h <= 20: return 0.4
+    return 0.02
+
+
+# ── primitivas reutilizáveis (imitam a física, não o resultado final) ─────────
+class NoiseBurst(SoundEvent):
+    """Estouro de ruído filtrado com decaimento exponencial — base física para
+    gotas, passos, tosse, latido, porta, cadeira etc. (um impacto = ruído
+    branco moldado por um filtro e um envelope, igual a um impacto real)."""
+    def __init__(self, dur=0.08, decay=0.02, filt="low", cutoff=0.3, amp=0.5, **kw):
+        super().__init__(**kw)
+        self.len_ = max(1, int(dur*SR)); self.decay_s = decay
+        self.filt = filt; self.cutoff = cutoff; self.amp = amp
+        self.pos = 0; self._f_lp = 0.0; self._f_hp_lp = 0.0
+
+    def _synth(self, n):
+        take = min(self.len_ - self.pos, n)
+        if take <= 0:
+            self.alive = False; return None
+        w = np.random.uniform(-1, 1, take).astype(np.float32)
+        tt = (np.arange(take)+self.pos)/SR
+        env = np.exp(-tt/self.decay_s).astype(np.float32)
+        sig = w*env
+        if self.filt in ("low", "band"):
+            lp = self._f_lp
+            for i in range(take):
+                lp += self.cutoff*(sig[i]-lp); sig[i] = lp
+            self._f_lp = lp
+        if self.filt in ("high", "band"):
+            lp = self._f_hp_lp; hp = np.empty(take, dtype=np.float32)
+            for i in range(take):
+                lp += 0.35*(sig[i]-lp); hp[i] = sig[i]-lp
+            self._f_hp_lp = lp; sig = hp
+        out = np.zeros(n, dtype=np.float32); out[:take] = sig*self.amp
+        self.pos += take
+        if self.pos >= self.len_: self.alive = False
+        return out
+
+
+class PulseTrain(SoundEvent):
+    """Vários NoiseBursts em sequência com gaps — tosse, passos, escrita,
+    grilo, latido: nada na natureza é um único estalo, é sempre uma série."""
+    def __init__(self, n_pulses=2, pulse_dur=0.05, decay=0.02, gap=(0.08, 0.18),
+                 filt="band", cutoff=0.25, amp=0.4, **kw):
+        super().__init__(**kw)
+        self.remaining = n_pulses; self.pulse_dur = pulse_dur; self.decay_s = decay
+        self.filt = filt; self.cutoff = cutoff; self.amp = amp; self.gap = gap
+        self.len_ = max(1, int(pulse_dur*SR))
+        self.pos = 0; self.state = "pulse"; self.gap_left = 0
+        self._f_lp = 0.0; self._f_hp_lp = 0.0
+
+    def _synth(self, n):
+        out = np.zeros(n, dtype=np.float32); i = 0
+        while i < n:
+            if self.remaining <= 0:
+                if i == 0: self.alive = False; return None
+                break
+            if self.state == "gap":
+                take = min(self.gap_left, n-i); self.gap_left -= take; i += take
+                if self.gap_left <= 0: self.state = "pulse"; self.pos = 0
+                continue
+            take = min(self.len_-self.pos, n-i)
+            w = np.random.uniform(-1, 1, take).astype(np.float32)
+            tt = (np.arange(take)+self.pos)/SR
+            env = np.exp(-tt/self.decay_s).astype(np.float32)
+            sig = w*env
+            if self.filt in ("low", "band"):
+                lp = self._f_lp
+                for k in range(take): lp += self.cutoff*(sig[k]-lp); sig[k] = lp
+                self._f_lp = lp
+            if self.filt in ("high", "band"):
+                lp = self._f_hp_lp; hp = np.empty(take, dtype=np.float32)
+                for k in range(take): lp += 0.35*(sig[k]-lp); hp[k] = sig[k]-lp
+                self._f_hp_lp = lp; sig = hp
+            out[i:i+take] = sig*self.amp
+            self.pos += take; i += take
+            if self.pos >= self.len_:
+                self.remaining -= 1; self.state = "gap"
+                self.gap_left = int(np.random.uniform(*self.gap)*SR)
+        return out
+
+
+class Swell(SoundEvent):
+    """Rajada longa: ruído colorido com envelope de subida/descida e filtro
+    que se abre com o tempo — vento, chiado de máquina, ônibus, moto passando.
+    O pan pode "varrer" o estéreo para simular algo passando por perto."""
+    def __init__(self, dur=2.0, cutoff0=0.1, cutoff1=0.35, amp=0.5, pan_sweep=0.0, **kw):
+        super().__init__(**kw)
+        self.len_ = max(1, int(dur*SR))
+        self.c0, self.c1 = cutoff0, cutoff1; self.amp = amp
+        self.pan_sweep = pan_sweep; self._pan0 = self.pan
+        self.pos = 0; self._lp = 0.0
+
+    def _synth(self, n):
+        take = min(self.len_-self.pos, n)
+        if take <= 0:
+            self.alive = False; return None
+        w = np.random.uniform(-1, 1, take).astype(np.float32)
+        frac = (self.pos+np.arange(take))/self.len_
+        env = np.sin(np.pi*np.clip(frac, 0, 1)).astype(np.float32)
+        cutoff = self.c0 + (self.c1-self.c0)*frac
+        sig = np.empty(take, dtype=np.float32); lp = self._lp
+        for i in range(take):
+            lp += float(cutoff[i])*(w[i]-lp); sig[i] = lp
+        self._lp = lp
+        if take:
+            self.pan = self._pan0 + self.pan_sweep*(float(frac[-1])-0.5)*2
+        out = np.zeros(n, dtype=np.float32); out[:take] = sig*env*self.amp
+        self.pos += take
+        if self.pos >= self.len_: self.alive = False
+        return out
+
+
+class Tone(SoundEvent):
+    """Tom com vibrato e pitch-bend opcionais — buzina, sirene distante,
+    abelha, coruja, apito: física de uma coluna de ar ou corda vibrando."""
+    def __init__(self, freq=440, dur=1.0, vibrato_hz=0.0, vibrato_depth=0.0,
+                 bend=0.0, amp=0.3, **kw):
+        super().__init__(**kw)
+        self.freq = freq*self.pitch; self.len_ = max(1, int(dur*SR))
+        self.vibrato_hz = vibrato_hz; self.vibrato_depth = vibrato_depth
+        self.bend = bend; self.amp = amp; self.pos = 0; self.phase = 0.0
+
+    def _synth(self, n):
+        take = min(self.len_-self.pos, n)
+        if take <= 0:
+            self.alive = False; return None
+        tt = (np.arange(take)+self.pos)/SR
+        frac = (self.pos+np.arange(take))/self.len_
+        env = np.sin(np.pi*np.clip(frac, 0, 1)).astype(np.float32)
+        f = self.freq*(1+self.bend*frac) + self.vibrato_depth*np.sin(2*np.pi*self.vibrato_hz*tt)
+        sig = np.sin(2*np.pi*f*tt+self.phase)
+        if take: self.phase = (self.phase+2*np.pi*float(f[-1])*take/SR) % (2*np.pi)
+        out = np.zeros(n, dtype=np.float32); out[:take] = (sig*env*self.amp).astype(np.float32)
+        self.pos += take
+        if self.pos >= self.len_: self.alive = False
+        return out
+
+
+# ── pássaros: várias espécies, cada uma com timbre e cadência próprios ────────
+class BirdEvent(SoundEvent):
+    """Canto = oscilador com FM leve (a garganta do pássaro não é uma senoide
+    fixa) + vários bicos curtos com gaps irregulares. Nunca soa igual duas vezes."""
+    _SPECIES = [
+        # nome,     peso, f0(Hz), profundidade FM, faixa nº de bicos, duração do bico(s)
+        ("bemtevi", 0.15, 1900, 550, (2, 3), 0.10),
+        ("sabia",   0.30, 2700, 950, (3, 5), 0.055),
+        ("canario", 0.20, 3400, 1150,(4, 6), 0.04),
+        ("pardal",  0.35, 2100, 380, (2, 3), 0.05),
+    ]
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        w = np.array([s[1] for s in self._SPECIES]); w = w/w.sum()
+        _, _, f0, fm, rng, dur = self._SPECIES[np.random.choice(len(self._SPECIES), p=w)]
+        self.f0, self.fm, self.chirp_dur = f0*self.pitch, fm, dur
+        self.n_chirps = int(np.random.randint(rng[0], rng[1]+1))
+        self.gap_s = float(np.random.uniform(0.035, 0.09))
+        self.phase = 0.0; self.i_chirp = 0; self.pos = 0
+        self.state = "chirp"; self.gap_left = 0
+
+    def _synth(self, n):
+        out = np.zeros(n, dtype=np.float32); i = 0
+        while i < n:
+            if self.state == "done":
+                if i == 0: self.alive = False; return None
+                break
+            if self.state == "gap":
+                take = min(self.gap_left, n-i); self.gap_left -= take; i += take
+                if self.gap_left <= 0: self.state = "chirp"; self.pos = 0
+                continue
+            clen = max(1, int(self.chirp_dur*SR))
+            take = min(clen-self.pos, n-i)
+            if take > 0:
+                tt = (np.arange(take)+self.pos)/SR
+                env = np.sin(np.pi*np.clip((self.pos+np.arange(take))/clen, 0, 1))
+                f = self.f0 + self.fm*np.sin(2*np.pi*7.5*tt)
+                out[i:i+take] = (np.sin(2*np.pi*f*tt+self.phase)*env).astype(np.float32)
+                self.phase = (self.phase+2*np.pi*float(f[-1])*take/SR) % (2*np.pi)
+            self.pos += take; i += take
+            if self.pos >= clen:
+                self.i_chirp += 1
+                if self.i_chirp >= self.n_chirps: self.state = "done"
+                else: self.state = "gap"; self.gap_left = int(self.gap_s*SR)
+        return out*0.55
+
+
+# ═══════════════════════════════════════════ tabelas de eventos por ambiente ══
+FOREST_EVENTS = [
+    {"cls": BirdEvent, "chance": 0.006, "cooldown": (2, 10), "max": 2,
+     "hour_mult": _mult_daytime,
+     "kwargs": lambda: dict(pan=_rand_pan(), distance=_rand_dist(0.05, 0.85), pitch=_rand_pitch(0.1))},
+    {"cls": PulseTrain, "chance": 0.003, "cooldown": (3, 12), "max": 3,
+     "hour_mult": _mult_nighttime,
+     "kwargs": lambda: dict(n_pulses=np.random.randint(8, 17), pulse_dur=0.02, decay=0.015,
+                             gap=(0.05, 0.12), filt="high", cutoff=0.4, amp=0.12,
+                             pan=_rand_pan(), distance=_rand_dist(0.2, 0.9))},
+    {"cls": Tone, "chance": 0.0006, "cooldown": (60, 180), "max": 1,
+     "hour_mult": _mult_nighttime,
+     "kwargs": lambda: dict(freq=np.random.uniform(420, 520), dur=np.random.uniform(0.9, 1.3),
+                             bend=-0.15, amp=0.3, pan=_rand_pan(), distance=_rand_dist(0.5, 0.95))},
+    {"cls": NoiseBurst, "chance": 0.01, "cooldown": (1, 6), "max": 3,
+     "kwargs": lambda: dict(dur=np.random.uniform(0.3, 0.7), decay=0.15, filt="high", cutoff=0.3,
+                             amp=np.random.uniform(0.12, 0.2), pan=_rand_pan(), distance=_rand_dist(0.1, 0.7))},
+    {"cls": Swell, "chance": 0.004, "cooldown": (8, 25), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(3, 6), cutoff0=0.05, cutoff1=0.25, amp=0.3,
+                             pan_sweep=0.3, pan=_rand_pan(), distance=_rand_dist(0.0, 0.4))},
+    {"cls": Tone, "chance": 0.001, "cooldown": (20, 50), "max": 1,
+     "kwargs": lambda: dict(freq=np.random.uniform(180, 220), dur=np.random.uniform(2, 4),
+                             vibrato_hz=18, vibrato_depth=15, amp=0.1,
+                             pan=_rand_pan(), distance=_rand_dist(0.1, 0.5))},
+]
+
+RAIN_EVENTS = [
+    {"cls": NoiseBurst, "chance": 0.03, "cooldown": (0.05, 0.2), "max": 6,
+     "kwargs": lambda: dict(dur=np.random.uniform(0.04, 0.07), decay=0.02, filt="low", cutoff=0.35,
+                             amp=np.random.uniform(0.35, 0.55), pan=_rand_pan(), distance=_rand_dist(0.0, 0.4))},
+    {"cls": NoiseBurst, "chance": 0.05, "cooldown": (0.02, 0.08), "max": 8,
+     "kwargs": lambda: dict(dur=np.random.uniform(0.015, 0.03), decay=0.01, filt="high", cutoff=0.5,
+                             amp=np.random.uniform(0.15, 0.3), pan=_rand_pan(), distance=_rand_dist(0.0, 0.6))},
+    {"cls": NoiseBurst, "chance": 0.006, "cooldown": (0.3, 1.2), "max": 3,
+     "kwargs": lambda: dict(dur=np.random.uniform(0.12, 0.2), decay=0.06, filt="low", cutoff=0.2,
+                             amp=np.random.uniform(0.25, 0.4), pan=_rand_pan(), distance=_rand_dist(0.2, 0.7))},
+]
+
+THUNDER_EVENTS = [
+    {"cls": Swell, "chance": 0.0015, "cooldown": (60, 150), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(2.5, 4.5), cutoff0=0.01, cutoff1=0.08,
+                             amp=np.random.uniform(0.5, 0.8), pan=_rand_pan(), distance=_rand_dist(0.3, 0.8))},
+]
+
+WIND_EVENTS = [
+    {"cls": Swell, "chance": 0.01, "cooldown": (4, 12), "max": 2,
+     "kwargs": lambda: dict(dur=np.random.uniform(2, 5), cutoff0=0.05, cutoff1=0.3,
+                             amp=np.random.uniform(0.4, 0.7), pan_sweep=0.4,
+                             pan=_rand_pan(), distance=_rand_dist(0.0, 0.3))},
+    {"cls": Tone, "chance": 0.003, "cooldown": (15, 40), "max": 1,
+     "kwargs": lambda: dict(freq=np.random.uniform(300, 500), dur=np.random.uniform(2, 4),
+                             vibrato_hz=np.random.uniform(0.5, 1.2), vibrato_depth=40, bend=0.05,
+                             amp=0.12, pan=_rand_pan(), distance=_rand_dist(0.2, 0.6))},
+]
+
+CAFE_EVENTS = [
+    {"cls": Swell, "chance": 0.0015, "cooldown": (30, 80), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(1.5, 2.5), cutoff0=0.2, cutoff1=0.5, amp=0.3,
+                             pan=_rand_pan(), distance=_rand_dist(0.1, 0.4))},
+    {"cls": NoiseBurst, "chance": 0.0012, "cooldown": (20, 60), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(0.3, 0.5), decay=0.12, filt="band", cutoff=0.3,
+                             amp=0.25, pan=_rand_pan(), distance=_rand_dist(0.2, 0.6))},
+    {"cls": NoiseBurst, "chance": 0.0008, "cooldown": (40, 100), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(0.4, 0.6), decay=0.2, filt="low", cutoff=0.15,
+                             amp=0.2, pan=_rand_pan(), distance=_rand_dist(0.3, 0.7))},
+    {"cls": PulseTrain, "chance": 0.002, "cooldown": (15, 40), "max": 1,
+     "kwargs": lambda: dict(n_pulses=np.random.randint(4, 8), pulse_dur=0.015, decay=0.01,
+                             gap=(0.15, 0.3), filt="high", cutoff=0.5, amp=0.15,
+                             pan=_rand_pan(), distance=_rand_dist(0.1, 0.4))},
+]
+
+LIBRARY_EVENTS = [
+    {"cls": NoiseBurst, "chance": 0.002, "cooldown": (8, 25), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(0.25, 0.4), decay=0.12, filt="high", cutoff=0.35,
+                             amp=0.12, pan=_rand_pan(), distance=_rand_dist(0.1, 0.5))},
+    {"cls": PulseTrain, "chance": 0.0015, "cooldown": (15, 45), "max": 1,
+     "kwargs": lambda: dict(n_pulses=np.random.randint(6, 15), pulse_dur=0.02, decay=0.015,
+                             gap=(0.03, 0.08), filt="high", cutoff=0.45, amp=0.06,
+                             pan=_rand_pan(), distance=_rand_dist(0.1, 0.4))},
+    {"cls": PulseTrain, "chance": 0.0006, "cooldown": (40, 120), "max": 1,
+     "kwargs": lambda: dict(n_pulses=2, pulse_dur=0.09, decay=0.04, gap=(0.15, 0.25),
+                             filt="band", cutoff=0.2, amp=0.18,
+                             pan=_rand_pan(), distance=_rand_dist(0.4, 0.8))},
+    {"cls": PulseTrain, "chance": 0.0008, "cooldown": (20, 60), "max": 1,
+     "kwargs": lambda: dict(n_pulses=np.random.randint(3, 7), pulse_dur=0.03, decay=0.015,
+                             gap=(0.25, 0.4), filt="low", cutoff=0.25, amp=0.06,
+                             pan=_rand_pan(), distance=_rand_dist(0.6, 0.95))},
+]
+
+TRAIN_EVENTS = [
+    {"cls": Tone, "chance": 0.0007, "cooldown": (90, 240), "max": 1,
+     "kwargs": lambda: dict(freq=np.random.uniform(800, 900), dur=np.random.uniform(1.5, 2.5),
+                             bend=-0.03, amp=0.18, pan=_rand_pan(), distance=_rand_dist(0.2, 0.5))},
+]
+
+CITY_EVENTS = [
+    {"cls": Swell, "chance": 0.002, "cooldown": (10, 30), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(3, 5), cutoff0=0.3, cutoff1=0.6, amp=0.25,
+                             pan_sweep=0.8, pan=_rand_pan(), distance=_rand_dist(0.1, 0.4))},
+    {"cls": Swell, "chance": 0.0012, "cooldown": (20, 50), "max": 1,
+     "kwargs": lambda: dict(dur=np.random.uniform(4, 7), cutoff0=0.05, cutoff1=0.15, amp=0.35,
+                             pan_sweep=0.3, pan=_rand_pan(), distance=_rand_dist(0.2, 0.6))},
+    {"cls": Tone, "chance": 0.0006, "cooldown": (60, 150), "max": 1,
+     "kwargs": lambda: dict(freq=np.random.uniform(500, 650), dur=np.random.uniform(4, 8),
+                             vibrato_hz=0.35, vibrato_depth=120, amp=0.12,
+                             pan=_rand_pan(), distance=_rand_dist(0.6, 0.95))},
+    {"cls": PulseTrain, "chance": 0.0009, "cooldown": (30, 90), "max": 1,
+     "kwargs": lambda: dict(n_pulses=np.random.randint(2, 4), pulse_dur=0.08, decay=0.035,
+                             gap=(0.2, 0.35), filt="band", cutoff=0.25, amp=0.2,
+                             pan=_rand_pan(), distance=_rand_dist(0.3, 0.7))},
+]
+
+
 # ─────────────────────────────────────────────── sons ambientes sintéticos ───
-# Cada som é uma função(n, state)-> array mono [-1..1].
-# Usam ruído colorido + modulação para imitar texturas reais.
+# Cada som é uma função(n, state)-> array mono [-1..1]. A textura contínua de
+# base usa ruído colorido + modulação; a "vida" (eventos discretos) vem do
+# EventScheduler guardado em st.scheduler (lazy, criado no primeiro uso).
 
 class _AmbState:
     def __init__(self):
@@ -95,38 +507,34 @@ class _AmbState:
         self.phase = 0.0
         self.env   = 0.0
         self.t     = 0
-        self.drops = []     # para chuva/gotas
+        self.drops = []     # legado, não usado mais (gotas viraram eventos)
         self.lp = 0.0
         self.lp2 = 0.0
+        self.scheduler  = None   # EventScheduler principal do ambiente
+        self.scheduler2 = None   # scheduler extra (ex.: trovão na tempestade)
 
 
 def _amb_rain(n, st):
     base = _pink(n, st.noise)
-    # adiciona estalos de gotas aleatórios
-    out = base * 0.6
-    if np.random.random() < 0.5:
-        idx = np.random.randint(0, n)
-        out[idx:idx+3] += np.random.uniform(0.2, 0.5)
-    # leve low-pass para soar "molhado"
     lp = st.lp
     for i in range(n):
-        lp += 0.2*(out[i]-lp); out[i] = lp
+        lp += 0.2*(base[i]-lp); base[i] = lp
     st.lp = lp
-    return out*0.9
+    base = base*0.55
+    if st.scheduler is None:
+        st.scheduler = EventScheduler(RAIN_EVENTS)
+    el, er = st.scheduler.render(n)
+    # ambiente "chuva" é mono (sem spatializer de camada aqui) — soma o lado
+    # esquerdo e direito dos eventos numa única textura mono, como as demais.
+    return np.clip(base + (el+er)*0.5, -1, 1).astype(np.float32)
 
 
 def _amb_storm(n, st):
     rain = _amb_rain(n, st)
-    # trovão ocasional: rajada grave
-    if np.random.random() < 0.004:
-        st.env = 1.0
-    if st.env > 0.001:
-        t = np.arange(n)
-        rumble = np.sin(2*np.pi*45*(t/SR)+st.phase) * st.env
-        st.phase = (st.phase + 2*np.pi*45*n/SR) % (2*np.pi)
-        st.env *= 0.9995
-        rain = rain*0.7 + rumble.astype(np.float32)*0.6
-    return rain
+    if st.scheduler2 is None:
+        st.scheduler2 = EventScheduler(THUNDER_EVENTS)
+    el, er = st.scheduler2.render(n)
+    return np.clip(rain + (el+er)*0.5, -1, 1).astype(np.float32)
 
 
 def _amb_sea(n, st):
@@ -150,17 +558,14 @@ def _amb_river(n, st):
 
 
 def _amb_forest(n, st):
-    bg = _green(n, st.noise)*0.3
-    # cantos de pássaros ocasionais (chirp)
-    if np.random.random() < 0.02:
-        st.env = 1.0; st.phase = 0
-    if st.env > 0.01:
-        t = np.arange(n)
-        f = 2500 + 800*np.sin(2*np.pi*8*(t/SR))
-        chirp = np.sin(2*np.pi*f*(t/SR)) * st.env * 0.15
-        st.env *= 0.95
-        bg = bg + chirp.astype(np.float32)
-    return bg
+    # base: "ar" da floresta — ruído verde suave + respiração lenta de vento
+    bg = _green(n, st.noise)*0.28
+    t = np.arange(n) + st.t; st.t += n
+    bg = bg * (0.85 + 0.15*np.sin(2*np.pi*0.03*(t/SR))).astype(np.float32)
+    if st.scheduler is None:
+        st.scheduler = EventScheduler(FOREST_EVENTS)
+    el, er = st.scheduler.render(n)
+    return np.clip(bg + (el+er)*0.5, -1, 1).astype(np.float32)
 
 
 def _amb_fire(n, st):
@@ -173,10 +578,21 @@ def _amb_fire(n, st):
 
 
 def _amb_wind(n, st):
+    # o vento real não muda só de volume — o timbre (filtro) também varia
     w = _pink(n, st.noise)
     t = np.arange(n) + st.t; st.t += n
     env = 0.4 + 0.6*np.abs(np.sin(2*np.pi*0.05*(t/SR)))
-    return (w*env*0.6).astype(np.float32)
+    cutoff = 0.15 + 0.15*np.abs(np.sin(2*np.pi*0.017*(t/SR)))  # timbre variável
+    lp = st.lp
+    out = np.empty(n, dtype=np.float32)
+    for i in range(n):
+        lp += float(cutoff[i])*(w[i]-lp); out[i] = lp
+    st.lp = lp
+    base = (out*env*0.7).astype(np.float32)
+    if st.scheduler is None:
+        st.scheduler = EventScheduler(WIND_EVENTS)
+    el, er = st.scheduler.render(n)
+    return np.clip(base + (el+er)*0.5, -1, 1).astype(np.float32)
 
 
 def _amb_fan(n, st):
@@ -200,11 +616,13 @@ def _amb_ac(n, st):
 
 
 def _amb_train(n, st):
-    """Trem em movimento: clickety-clack rítmico de trilho, rumble, vento, apito."""
+    """Trem em movimento: clickety-clack rítmico de trilho (velocidade variável),
+    rumble, vento, apito (agora como evento independente)."""
     t = np.arange(n) + st.t; st.t += n
     rumble = _brown(n, st.noise) * 0.38
-    # Juntas do trilho a ~2.5 Hz — decaimento exponencial curto após cada batida
-    click_period = SR / 2.5
+    # velocidade oscila lentamente (acelera/desacelera ao longo de ~50s)
+    speed = 0.82 + 0.22*np.sin(2*np.pi*0.02*(t/SR))
+    click_period = SR / (2.5*speed)
     phase1 = t % click_period
     phase2 = (t + click_period * 0.55) % click_period
     decay = 220.0
@@ -212,13 +630,10 @@ def _amb_train(n, st):
     clicks2 = (np.exp(-phase2 / (decay * 0.75)) * (phase2 < decay * 0.75)).astype(np.float32) * 0.40
     wind_env = (0.75 + 0.25 * np.sin(2*np.pi * 0.06 * (t/SR))).astype(np.float32)
     wind = _pink(n, st.noise) * wind_env * 0.18
-    whistle = np.zeros(n, dtype=np.float32)
-    if np.random.random() < 0.0007:
-        st.env = 0.65
-    if st.env > 0.01:
-        whistle = (np.sin(2*np.pi * 880 * (t/SR) + st.phase) * st.env * 0.18).astype(np.float32)
-        st.phase = (st.phase + 2*np.pi * 880 * n/SR) % (2*np.pi)
-        st.env *= 0.9990
+    if st.scheduler is None:
+        st.scheduler = EventScheduler(TRAIN_EVENTS)
+    el, er = st.scheduler.render(n)
+    whistle = (el+er)*0.5
     return np.clip(rumble + clicks * 0.38 + clicks2 * 0.28 + wind + whistle, -1, 1).astype(np.float32)
 
 
@@ -236,7 +651,8 @@ def _amb_plane(n, st):
 
 
 def _amb_cafe(n, st):
-    """Café: murmúrio de vozes com AM na taxa de sílabas, steam, tinido de xícaras."""
+    """Café: murmúrio de vozes com AM na taxa de sílabas, steam, tinido de
+    xícaras + eventos longos (espresso, cadeira, porta, colher mexendo)."""
     t = np.arange(n) + st.t; st.t += n
     speech = _pink(n, st.noise)
     # Três "vozes" sobrepostas com modulação na faixa de sílabas (3-6 Hz)
@@ -258,32 +674,28 @@ def _amb_cafe(n, st):
         tt = np.arange(length)
         freq = float(np.random.uniform(1800, 3500))
         clink[idx:idx+length] = (np.sin(2*np.pi * freq * (tt/SR)) * np.exp(-tt / 9.0) * 0.28).astype(np.float32)
-    return np.clip(voices + warmth + steam + clink, -1, 1).astype(np.float32)
+    if st.scheduler is None:
+        st.scheduler = EventScheduler(CAFE_EVENTS)
+    el, er = st.scheduler.render(n)
+    return np.clip(voices + warmth + steam + clink + (el+er)*0.5, -1, 1).astype(np.float32)
 
 
 def _amb_library(n, st):
-    """Biblioteca: silêncio quase total, zumbido elétrico, farfar de páginas, passos distantes."""
+    """Biblioteca: silêncio quase total, zumbido elétrico + eventos raros
+    (página virando, lápis escrevendo, tosse, passos distantes)."""
     t = np.arange(n) + st.t; st.t += n
     air = _pink(n, st.noise) * 0.06
     hum = (np.sin(2*np.pi * 60 * (t/SR) + st.phase) * 0.012).astype(np.float32)
     st.phase = (st.phase + 2*np.pi * 60 * n/SR) % (2*np.pi)
-    if np.random.random() < 0.003:
-        st.env = 0.25
-    rustle = np.zeros(n, dtype=np.float32)
-    if st.env > 0.005:
-        rustle = _white(n) * st.env * 0.10
-        st.env *= 0.982
-    thump = np.zeros(n, dtype=np.float32)
-    if np.random.random() < 0.002:
-        idx = int(np.random.randint(0, max(1, n - 40)))
-        length = min(40, n - idx)
-        tt = np.arange(length)
-        thump[idx:idx+length] = (np.sin(2*np.pi * 75 * (tt/SR)) * np.exp(-tt / 7.0) * 0.10).astype(np.float32)
-    return np.clip(air + hum + rustle + thump, -1, 1).astype(np.float32)
+    if st.scheduler is None:
+        st.scheduler = EventScheduler(LIBRARY_EVENTS)
+    el, er = st.scheduler.render(n)
+    return np.clip(air + hum + (el+er)*0.5, -1, 1).astype(np.float32)
 
 
 def _amb_city(n, st):
-    """Cidade à noite: tráfego com swell de carros passando, buzina ocasional."""
+    """Cidade à noite: tráfego com swell de carros passando, buzina ocasional
+    + eventos urbanos raros (moto, ônibus, sirene longínqua, cachorro)."""
     t = np.arange(n) + st.t; st.t += n
     traffic = _brown(n, st.noise) * 0.30
     swell = (0.55 + 0.45 * np.abs(np.sin(2*np.pi * 0.09 * (t/SR) + 0.7))).astype(np.float32)
@@ -296,7 +708,10 @@ def _amb_city(n, st):
         horn = (np.sin(2*np.pi * 490 * (t/SR) + st.phase) * st.env * 0.10).astype(np.float32)
         st.phase = (st.phase + 2*np.pi * 490 * n/SR) % (2*np.pi)
         st.env *= 0.9975
-    return np.clip(traffic + urban + horn, -1, 1).astype(np.float32)
+    if st.scheduler is None:
+        st.scheduler = EventScheduler(CITY_EVENTS)
+    el, er = st.scheduler.render(n)
+    return np.clip(traffic + urban + horn + (el+er)*0.5, -1, 1).astype(np.float32)
 
 
 # catálogo: id -> (rótulo, função, espacial_default)
